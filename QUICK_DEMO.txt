@@ -1,0 +1,37 @@
+AUTO-REFRESH UI FEATURE - DEMO WALKTHROUGH
+==========================================
+
+STEP 1: Open UI at http://localhost:4321
+- See pulsing green dot next to "Auto-refresh: starting..."
+- Console shows: "Auto-refresh started: polling every 3 seconds"
+
+STEP 2: Watch Timer Update
+- Changes to "Auto-refresh: just now"
+- Counts: 1s ago, 2s ago, 3s ago
+- Resets to "just now" every 3 seconds
+
+STEP 3: Create & Start Browser
+- Create profile "Test Browser"
+- Click "Start" - browser opens
+- Status shows "Running" badge (green)
+
+STEP 4: THE MAGIC - Close Browser Manually
+- Close browser window (X button)
+- DON'T click UI refresh button
+- Watch timer count: 1s ago, 2s ago, 3s ago, just now
+- Status automatically changes to "Stopped" badge (gray)
+- NO MANUAL REFRESH NEEDED!
+
+STEP 5: Verify Manual Refresh Still Works
+- Click refresh button manually
+- Timer resets to "just now"
+- Auto-refresh continues in background
+
+SUCCESS CRITERIA:
+✅ Green dot pulses continuously
+✅ Timer updates every second
+✅ Refreshes happen every 3 seconds
+✅ Closed browsers detected automatically
+✅ Status updates without manual refresh
+✅ No performance issues
+✅ No console errors

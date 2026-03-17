@@ -17,6 +17,12 @@ export const ProfileSettingsSchema = z.object({
 });
 export type ProfileSettings = z.infer<typeof ProfileSettingsSchema>;
 
+export const SavedTabSchema = z.object({
+  url: z.string(),
+  active: z.boolean()
+});
+export type SavedTab = z.infer<typeof SavedTabSchema>;
+
 export const ProfileRecordSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(200),
@@ -25,7 +31,8 @@ export const ProfileRecordSchema = z.object({
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   dataDir: z.string().min(1),
-  managedDataDir: z.boolean().default(true)
+  managedDataDir: z.boolean().default(true),
+  savedTabs: z.array(SavedTabSchema).optional()
 });
 export type ProfileRecord = z.infer<typeof ProfileRecordSchema>;
 

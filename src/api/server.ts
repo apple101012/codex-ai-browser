@@ -16,12 +16,14 @@ import type { ProfileStore } from "../storage/profileStore.js";
 import type { BrowserRuntime } from "../browser/runtime.js";
 import type { AppConfig } from "../config.js";
 import type { ActiveControlStore } from "../control/activeControlStore.js";
+import { ProfileBackupStore } from "../storage/profileBackupStore.js";
 
 export interface AppDependencies {
   config: AppConfig;
   store: ProfileStore;
   runtime: BrowserRuntime;
   controlStore: ActiveControlStore;
+  backupStore?: ProfileBackupStore;
 }
 
 const parseProfileId = (value: unknown): string => {
@@ -66,10 +68,31 @@ const OpenUrlSchema = z.object({
   autoStart: z.boolean().default(true)
 });
 
+const CreateBackupSchema = z.object({
+  destinationDir: z.string().min(1).optional(),
+  label: z.string().min(1).max(200).optional()
+});
+
+const ListBackupsSchema = z.object({
+  profileId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+const ListProfileBackupsSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(100)
+});
+
+const RestoreBackupSchema = z.object({
+  backupId: z.string().uuid(),
+  autoStart: z.boolean().default(false),
+  setActive: z.boolean().default(false)
+});
+
 const DEFAULT_BROWSER_PROFILE_NAME = "Browser Profile";
 const LEGACY_GEMINI_PROFILE_NAME = "Gemini Persistent";
 
-export const buildServer = ({ config, store, runtime, controlStore }: AppDependencies) => {
+export const buildServer = ({ config, store, runtime, controlStore, backupStore: providedBackupStore }: AppDependencies) => {
+  const backupStore = providedBackupStore ?? new ProfileBackupStore(config.backupDir ?? path.join(config.dataDir, "backups"));
   const app = Fastify({
     logger: true
   });
@@ -111,6 +134,98 @@ export const buildServer = ({ config, store, runtime, controlStore }: AppDepende
     const payload = CreateProfileInputSchema.parse(request.body);
     const profile = await store.create(payload);
     await reply.code(201).send({ profile });
+  });
+
+  app.get("/backups", async (request, reply) => {
+    const query = ListBackupsSchema.parse(request.query ?? {});
+    const backups = await backupStore.listBackups({
+      profileId: query.profileId,
+      limit: query.limit
+    });
+
+    await reply.send({ backups });
+  });
+
+  app.get("/profiles/:id/backups", async (request, reply) => {
+    const id = parseProfileId((request.params as { id?: string }).id);
+    const profile = await store.get(id);
+    if (!profile) {
+      await reply.code(404).send({ error: "Profile not found." });
+      return;
+    }
+
+    const query = ListProfileBackupsSchema.parse(request.query ?? {});
+    const backups = await backupStore.listBackups({
+      profileId: id,
+      limit: query.limit
+    });
+
+    await reply.send({ profileId: id, backups });
+  });
+
+  app.post("/profiles/:id/backup", async (request, reply) => {
+    const profile = await getProfileOr404(request.params, store, reply);
+    if (!profile) {
+      return;
+    }
+
+    const payload = CreateBackupSchema.parse(request.body ?? {});
+    const backup = await backupStore.createBackup({
+      profile,
+      destinationDir: payload.destinationDir,
+      label: payload.label
+    });
+
+    await reply.send({
+      created: true,
+      profileId: profile.id,
+      backup
+    });
+  });
+
+  app.post("/profiles/:id/restore", async (request, reply) => {
+    const id = parseProfileId((request.params as { id?: string }).id);
+    const profile = await store.get(id);
+    if (!profile) {
+      await reply.code(404).send({ error: "Profile not found." });
+      return;
+    }
+
+    const payload = RestoreBackupSchema.parse(request.body ?? {});
+    const backup = await backupStore.getBackup(payload.backupId);
+    if (!backup) {
+      await reply.code(404).send({ error: "Backup not found." });
+      return;
+    }
+
+    if (backup.profileId !== profile.id) {
+      await reply.code(400).send({ error: "Backup does not belong to this profile." });
+      return;
+    }
+
+    const wasRunning = runtime.isRunning(id);
+    if (wasRunning) {
+      await runtime.stop(id);
+    }
+
+    await backupStore.restoreBackup(profile, backup);
+
+    const started = payload.autoStart || wasRunning;
+    if (started) {
+      await runtime.start(profile);
+    }
+
+    if (payload.setActive) {
+      controlStore.setActiveProfile(id);
+    }
+
+    await reply.send({
+      restored: true,
+      profileId: id,
+      backup,
+      started,
+      activeProfileId: payload.setActive ? id : controlStore.getState().activeProfileId
+    });
   });
 
   app.post("/profiles/ensure/gemini", async (request, reply) => {

@@ -1,7 +1,9 @@
 import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { loadConfig, type AppConfig } from "./config.js";
 import { buildServer } from "./api/server.js";
 import { ProfileStore } from "./storage/profileStore.js";
+import { ProfileBackupStore } from "./storage/profileBackupStore.js";
 import { PlaywrightRuntime } from "./browser/playwrightRuntime.js";
 import { ActiveControlStore } from "./control/activeControlStore.js";
 
@@ -31,17 +33,22 @@ export const startServer = async (options: StartServerOptions = {}): Promise<Run
 
   await mkdir(config.profilesDir, { recursive: true });
   await mkdir(config.artifactsDir, { recursive: true });
+  const backupDir = config.backupDir ?? path.join(config.dataDir, "backups");
+  await mkdir(backupDir, { recursive: true });
 
   const store = new ProfileStore(config.profilesDir);
   await store.init();
+  const backupStore = new ProfileBackupStore(backupDir);
+  await backupStore.init();
 
   const runtime = new PlaywrightRuntime({
     artifactsDir: config.artifactsDir,
     defaultHeadless: config.defaultHeadless,
-    allowEvaluate: config.allowEvaluate
+    allowEvaluate: config.allowEvaluate,
+    profileStore: store
   });
   const controlStore = new ActiveControlStore();
-  const app = buildServer({ config, store, runtime, controlStore });
+  const app = buildServer({ config, store, runtime, controlStore, backupStore });
 
   const close = async (): Promise<void> => {
     await runtime.stopAll();
@@ -69,4 +76,3 @@ export const startServer = async (options: StartServerOptions = {}): Promise<Run
     close
   };
 };
-

@@ -7,6 +7,7 @@ AI-focused, multi-profile browser runtime with:
 - Active profile takeover mode (you pick the live profile, AI controls that one)
 - Built-in persistent Browser Profile bootstrap (Gemini-ready)
 - Generic URL opener (`/control/open-url`) plus Gemini opener (`/control/open-gemini`)
+- Optional profile backup/restore API (supports VPS-mounted backup directory)
 - Browser control UI at `/app`
 - Desktop wrapper support (Electron)
 - MCP server for Codex / Claude / Gemini CLI integrations
@@ -47,6 +48,10 @@ This project is designed so an AI agent can fully control browser sessions while
   - `POST /profiles/ensure/browser`
   - `POST /profiles/ensure/gemini`
   - `POST /profiles/stop-all`
+  - `POST /profiles/:id/backup`
+  - `POST /profiles/:id/restore`
+  - `GET /profiles/:id/backups`
+  - `GET /backups`
   - `POST /control/open-url`
   - `POST /control/open-gemini`
 - MCP tools:
@@ -61,6 +66,9 @@ This project is designed so an AI agent can fully control browser sessions while
   - `get_control_state`
   - `set_active_profile`
   - `run_active_commands`
+  - `list_backups`
+  - `backup_profile`
+  - `restore_profile_backup`
 
 ## Quick Start
 
@@ -85,6 +93,7 @@ npm run mcp
 Environment variables:
 - `API_BASE_URL` (default `http://127.0.0.1:4321`)
 - `API_TOKEN` (must match API token if configured on server)
+- `BACKUP_DIR` (optional backup index/default snapshot directory; set this to a VPS-mounted path if desired)
 
 ## Gemini Profile Setup
 
@@ -156,6 +165,29 @@ curl -X POST http://127.0.0.1:4321/profiles/<PROFILE_ID>/commands \
       {"type":"navigate","url":"https://example.com"},
       {"type":"getPageState","includeTextExcerpt":true}
     ]
+  }'
+```
+
+Create a profile backup snapshot:
+
+```bash
+curl -X POST http://127.0.0.1:4321/profiles/<PROFILE_ID>/backup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "label":"before-retest",
+    "destinationDir":"D:/vps-mount/browser-backups"
+  }'
+```
+
+Restore profile from backup:
+
+```bash
+curl -X POST http://127.0.0.1:4321/profiles/<PROFILE_ID>/restore \
+  -H "Content-Type: application/json" \
+  -d '{
+    "backupId":"<BACKUP_ID>",
+    "autoStart":true,
+    "setActive":true
   }'
 ```
 

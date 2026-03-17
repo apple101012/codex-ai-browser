@@ -148,8 +148,12 @@
             <section class="panel glass-panel fade-in" style="animation-delay: 0.25s;">
               <div class="panel-header space-between">
                 <h2>Running Profiles</h2>
-                <div class="action-row m-0">
-                  <button id="refreshBtn" class="btn-icon" title="Refresh">
+                <div class="action-row m-0" style="align-items: center; gap: 8px;">
+                  <span style="font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 4px;">
+                    <span style="display: inline-block; width: 6px; height: 6px; background: var(--success); border-radius: 50%; animation: pulse 2s infinite;"></span>
+                    Auto-refresh: <span id="autoRefreshIndicator">starting...</span>
+                  </span>
+                  <button id="refreshBtn" class="btn-icon" title="Refresh Now">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
                   </button>
                   <button id="releaseBtn" class="btn-secondary btn-sm">Release Active</button>

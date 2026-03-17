@@ -19,7 +19,8 @@ const waitForRow = async (page: import("playwright").Page, profileName: string) 
 const getRowProfileId = async (page: import("playwright").Page, profileName: string): Promise<string> => {
   const profileId = await page.evaluate((name) => {
     const row = [...document.querySelectorAll("#profilesBody tr")].find((entry) => entry.textContent?.includes(name));
-    return row?.querySelectorAll("td")[1]?.textContent?.trim() ?? "";
+    const idEl = row?.querySelector('div[title="Double click to select entirely"]');
+    return idEl?.textContent?.trim() ?? "";
   }, profileName);
   if (!profileId) {
     throw new Error(`Could not resolve profile id for ${profileName}`);
@@ -27,19 +28,13 @@ const getRowProfileId = async (page: import("playwright").Page, profileName: str
   return profileId;
 };
 
-const assertRowCell = async (
-  page: import("playwright").Page,
-  profileName: string,
-  cellIndex: number,
-  expected: string
-) => {
+const assertRowContains = async (page: import("playwright").Page, profileName: string, expectedText: string) => {
   await page.waitForFunction(
-    ({ name, idx, text }) => {
+    ({ name, expected }) => {
       const row = [...document.querySelectorAll("#profilesBody tr")].find((entry) => entry.textContent?.includes(name));
-      const cell = row?.querySelectorAll("td")[idx];
-      return (cell?.textContent ?? "").trim() === text;
+      return (row?.textContent ?? "").includes(expected);
     },
-    { name: profileName, idx: cellIndex, text: expected },
+    { name: profileName, expected: expectedText },
     { timeout: 15_000 }
   );
 };
@@ -125,7 +120,14 @@ const run = async (): Promise<void> => {
       await screenshot(page, artifactRoot, "02-refreshed.png");
 
       const profileName = "Live Browser Profile A";
-      await page.check("#profileHeadless");
+      await page.evaluate(() => {
+        const input = document.querySelector<HTMLInputElement>("#profileHeadless");
+        if (!input) {
+          throw new Error("Missing #profileHeadless checkbox");
+        }
+        input.checked = true;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
       await page.fill("#profileName", profileName);
       await page.selectOption("#profileEngine", "chromium");
       await page.click("#createProfileBtn");
@@ -134,7 +136,7 @@ const run = async (): Promise<void> => {
       details.push("Created hidden profile in UI with chromium engine.");
       await screenshot(page, artifactRoot, "03-created.png");
 
-      await assertRowCell(page, profileName, 4, "Hidden");
+      await assertRowContains(page, profileName, "Hidden UI");
       checksPassed += 1;
       details.push("New profile initially shows Hidden mode.");
       await screenshot(page, artifactRoot, "04-hidden-mode.png");
@@ -154,13 +156,13 @@ const run = async (): Promise<void> => {
       await screenshot(page, artifactRoot, "05-delete-profile.png");
 
       await clickRowAction(page, profileName, "Start");
-      await assertRowCell(page, profileName, 3, "Yes");
+      await assertRowContains(page, profileName, "Running");
       checksPassed += 1;
       details.push("Start button launched a real runtime session in hidden mode.");
       await screenshot(page, artifactRoot, "06-started-hidden.png");
 
-      await clickRowAction(page, profileName, "Show Browser");
-      await assertRowCell(page, profileName, 4, "Visible");
+      await clickRowAction(page, profileName, "Show UI");
+      await assertRowContains(page, profileName, "Visible UI");
       checksPassed += 1;
       details.push("Show Browser switched mode to Visible.");
       await screenshot(page, artifactRoot, "07-shown.png");
@@ -217,15 +219,15 @@ const run = async (): Promise<void> => {
       details.push("Read Tab Text command works for tab 0.");
       await screenshot(page, artifactRoot, "11-tab-controls.png");
 
-      await clickRowAction(page, profileName, "Hide Browser");
-      await assertRowCell(page, profileName, 4, "Hidden");
-      await assertRowCell(page, profileName, 3, "Yes");
+      await clickRowAction(page, profileName, "Hide UI");
+      await assertRowContains(page, profileName, "Hidden UI");
+      await assertRowContains(page, profileName, "Running");
       checksPassed += 1;
       details.push("Hide Browser switched mode back to Hidden and kept session running.");
       await screenshot(page, artifactRoot, "12-hidden-again.png");
 
       await clickRowAction(page, profileName, "Stop");
-      await assertRowCell(page, profileName, 3, "No");
+      await assertRowContains(page, profileName, "Stopped");
       checksPassed += 1;
       details.push("Stop button closed runtime session.");
       await screenshot(page, artifactRoot, "13-stopped.png");

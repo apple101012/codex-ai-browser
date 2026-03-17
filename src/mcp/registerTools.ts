@@ -1,9 +1,12 @@
 import { z } from "zod";
 import {
+  BackupProfileToolInputSchema,
   CreateProfileToolInputSchema,
   EnsureGeminiProfileToolInputSchema,
+  ListBackupsToolInputSchema,
   OpenGeminiSessionToolInputSchema,
   ProfileIdToolInputSchema,
+  RestoreProfileBackupToolInputSchema,
   RunActiveCommandsToolInputSchema,
   RunCommandsToolInputSchema,
   SetActiveProfileToolInputSchema,
@@ -308,6 +311,78 @@ export const registerBrowserTools = (server: RegisterableMcpServer, apiRequest: 
         body: JSON.stringify({
           commands: parsed.commands,
           autoStart: parsed.autoStart ?? true
+        })
+      });
+      return toText(payload);
+    }
+  );
+
+  server.registerTool(
+    "list_backups",
+    {
+      description: ToolDescriptions.listBackups,
+      inputSchema: {
+        profileId: z.string().uuid().optional(),
+        limit: z.number().int().min(1).max(500).optional()
+      }
+    },
+    async (input) => {
+      const parsed = ListBackupsToolInputSchema.parse(input ?? {});
+      const query = new URLSearchParams();
+      if (parsed.profileId) {
+        query.set("profileId", parsed.profileId);
+      }
+      if (parsed.limit !== undefined) {
+        query.set("limit", String(parsed.limit));
+      }
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      const payload = await apiRequest(`/backups${suffix}`);
+      return toText(payload);
+    }
+  );
+
+  server.registerTool(
+    "backup_profile",
+    {
+      description: ToolDescriptions.backupProfile,
+      inputSchema: {
+        profileId: z.string().uuid(),
+        destinationDir: z.string().min(1).optional(),
+        label: z.string().min(1).max(200).optional()
+      }
+    },
+    async (input) => {
+      const parsed = BackupProfileToolInputSchema.parse(input);
+      const payload = await apiRequest(`/profiles/${parsed.profileId}/backup`, {
+        method: "POST",
+        body: JSON.stringify({
+          destinationDir: parsed.destinationDir,
+          label: parsed.label
+        })
+      });
+      return toText(payload);
+    }
+  );
+
+  server.registerTool(
+    "restore_profile_backup",
+    {
+      description: ToolDescriptions.restoreProfileBackup,
+      inputSchema: {
+        profileId: z.string().uuid(),
+        backupId: z.string().uuid(),
+        autoStart: z.boolean().optional(),
+        setActive: z.boolean().optional()
+      }
+    },
+    async (input) => {
+      const parsed = RestoreProfileBackupToolInputSchema.parse(input);
+      const payload = await apiRequest(`/profiles/${parsed.profileId}/restore`, {
+        method: "POST",
+        body: JSON.stringify({
+          backupId: parsed.backupId,
+          autoStart: parsed.autoStart ?? false,
+          setActive: parsed.setActive ?? false
         })
       });
       return toText(payload);

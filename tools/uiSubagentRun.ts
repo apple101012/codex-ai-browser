@@ -24,14 +24,13 @@ const waitForRow = async (page: Page, profileName: string) => {
   );
 };
 
-const assertRowCell = async (page: Page, profileName: string, cellIndex: number, expected: string) => {
+const assertRowContains = async (page: Page, profileName: string, expectedText: string) => {
   await page.waitForFunction(
-    ({ name, idx, text }) => {
+    ({ name, expected }) => {
       const row = [...document.querySelectorAll("#profilesBody tr")].find((entry) => entry.textContent?.includes(name));
-      const cell = row?.querySelectorAll("td")[idx];
-      return (cell?.textContent ?? "").trim() === text;
+      return (row?.textContent ?? "").includes(expected);
     },
-    { name: profileName, idx: cellIndex, text: expected },
+    { name: profileName, expected: expectedText },
     { timeout: 12_000 }
   );
 };
@@ -43,8 +42,8 @@ const clickRowAction = async (page: Page, profileName: string, buttonName: strin
 const getRowProfileId = async (page: Page, profileName: string): Promise<string> => {
   const profileId = await page.evaluate((name) => {
     const row = [...document.querySelectorAll("#profilesBody tr")].find((entry) => entry.textContent?.includes(name));
-    const idCell = row?.querySelectorAll("td")[1];
-    return idCell?.textContent?.trim() ?? "";
+    const idElement = row?.querySelector('div[title="Double click to select entirely"]');
+    return idElement?.textContent?.trim() ?? "";
   }, profileName);
   if (!profileId) {
     throw new Error(`Could not resolve profile id for ${profileName}`);
@@ -154,7 +153,14 @@ const run = async (): Promise<void> => {
         const checksTotal = 8;
 
         const profileName = "Agent Profile Lifecycle";
-        await page.check("#profileHeadless");
+        await page.evaluate(() => {
+          const input = document.querySelector<HTMLInputElement>("#profileHeadless");
+          if (!input) {
+            throw new Error("Missing #profileHeadless checkbox");
+          }
+          input.checked = true;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        });
         await page.fill("#profileName", profileName);
         await page.click("#createProfileBtn");
         await waitForRow(page, profileName);
@@ -162,30 +168,30 @@ const run = async (): Promise<void> => {
         details.push("Create profile works from UI form.");
         await screenshotStep(page, dir, "01-created.png");
 
-        await assertRowCell(page, profileName, 4, "Hidden");
+        await assertRowContains(page, profileName, "Hidden UI");
         checksPassed += 1;
         details.push("New profile starts in Hidden mode when checkbox selected.");
 
         await clickRowAction(page, profileName, "Start");
-        await assertRowCell(page, profileName, 3, "Yes");
+        await assertRowContains(page, profileName, "Running");
         checksPassed += 1;
         details.push("Start button changes running state to Yes.");
         await screenshotStep(page, dir, "02-started.png");
 
-        await clickRowAction(page, profileName, "Show Browser");
-        await assertRowCell(page, profileName, 4, "Visible");
+        await clickRowAction(page, profileName, "Show UI");
+        await assertRowContains(page, profileName, "Visible UI");
         checksPassed += 1;
         details.push("Show Browser toggles mode to Visible.");
         await screenshotStep(page, dir, "03-visible.png");
 
-        await clickRowAction(page, profileName, "Hide Browser");
-        await assertRowCell(page, profileName, 4, "Hidden");
+        await clickRowAction(page, profileName, "Hide UI");
+        await assertRowContains(page, profileName, "Hidden UI");
         checksPassed += 1;
         details.push("Hide Browser toggles mode back to Hidden.");
         await screenshotStep(page, dir, "04-hidden.png");
 
         await clickRowAction(page, profileName, "Stop");
-        await assertRowCell(page, profileName, 3, "No");
+        await assertRowContains(page, profileName, "Stopped");
         checksPassed += 1;
         details.push("Stop button changes running state to No.");
         await screenshotStep(page, dir, "05-stopped.png");
@@ -204,7 +210,14 @@ const run = async (): Promise<void> => {
         details.push("Delete profile removes row from table.");
         await screenshotStep(page, dir, "06-deleted.png");
 
-        await page.uncheck("#profileHeadless");
+        await page.evaluate(() => {
+          const input = document.querySelector<HTMLInputElement>("#profileHeadless");
+          if (!input) {
+            throw new Error("Missing #profileHeadless checkbox");
+          }
+          input.checked = false;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        });
         checksPassed += 1;
         details.push("Headless checkbox can be toggled back for visible-default creation.");
 

@@ -7,7 +7,8 @@ import {
   type ProfileRecord,
   ProfileRecordSchema,
   UpdateProfileInputSchema,
-  type UpdateProfileInput
+  type UpdateProfileInput,
+  type SavedTab
 } from "../domain/profile.js";
 
 const INDEX_FILE_NAME = "profiles-index.json";
@@ -120,6 +121,29 @@ export class ProfileStore {
       await rm(existing.dataDir, { recursive: true, force: true });
     }
     return true;
+  }
+
+  async saveTabs(profileId: string, tabs: Array<{ url: string; active: boolean }>): Promise<ProfileRecord | null> {
+    const records = await this.readIndex();
+    const index = records.findIndex((record) => record.id === profileId);
+    if (index === -1) {
+      return null;
+    }
+
+    const current = records[index];
+    if (!current) {
+      return null;
+    }
+
+    const nextRecord: ProfileRecord = ProfileRecordSchema.parse({
+      ...current,
+      savedTabs: tabs,
+      updatedAt: new Date().toISOString()
+    });
+
+    records[index] = nextRecord;
+    await this.writeIndex(records);
+    return nextRecord;
   }
 
   private async readIndex(): Promise<ProfileRecord[]> {

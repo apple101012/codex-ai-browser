@@ -101,14 +101,29 @@ const stringToColor = (str) => {
   return `hsl(${hue}, 70%, 60%)`;
 };
 
-const refreshProfiles = async () => {
-  const [{ profiles, runningProfileIds }, control] = await Promise.all([request("/profiles"), request("/control/state")]);
-  const running = new Set(runningProfileIds);
-  const activeProfileId = control.activeProfileId;
-  els.activeState.textContent = `Active profile: ${activeProfileId ?? "none"} (updated ${control.updatedAt})`;
+// Auto-refresh state
+let autoRefreshInterval = null;
+let lastRefreshTime = null;
+let isRefreshing = false;
 
-  els.profilesBody.innerHTML = "";
-  for (const profile of profiles) {
+const refreshProfiles = async () => {
+  // Prevent concurrent refreshes
+  if (isRefreshing) {
+    return;
+  }
+  
+  isRefreshing = true;
+  try {
+    const [{ profiles, runningProfileIds }, control] = await Promise.all([request("/profiles"), request("/control/state")]);
+    const running = new Set(runningProfileIds);
+    const activeProfileId = control.activeProfileId;
+    els.activeState.textContent = `Active profile: ${activeProfileId ?? "none"} (updated ${control.updatedAt})`;
+    
+    lastRefreshTime = new Date();
+    updateRefreshIndicator();
+
+    els.profilesBody.innerHTML = "";
+    for (const profile of profiles) {
     const isRunning = running.has(profile.id);
     const isVisible = profile.settings?.headless === false;
     const isActive = profile.id === activeProfileId;
@@ -283,6 +298,53 @@ const refreshProfiles = async () => {
     actionsContainer.append(grp1, grp2, grp3, deleteBtn);
     els.profilesBody.append(tr);
   }
+  } finally {
+    isRefreshing = false;
+  }
+};
+
+// Update refresh indicator to show auto-refresh status
+const updateRefreshIndicator = () => {
+  const indicator = document.getElementById("autoRefreshIndicator");
+  if (!indicator) return;
+  
+  if (lastRefreshTime) {
+    const now = new Date();
+    const secondsAgo = Math.floor((now - lastRefreshTime) / 1000);
+    indicator.textContent = secondsAgo === 0 ? "just now" : `${secondsAgo}s ago`;
+    indicator.style.opacity = "1";
+  }
+};
+
+// Start auto-refresh polling
+const startAutoRefresh = () => {
+  if (autoRefreshInterval) {
+    return; // Already running
+  }
+  
+  // Refresh every 3 seconds
+  autoRefreshInterval = setInterval(async () => {
+    try {
+      await refreshProfiles();
+    } catch (error) {
+      // Silently fail on auto-refresh errors to avoid spamming the UI
+      console.error("Auto-refresh error:", error);
+    }
+  }, 3000);
+  
+  // Update the time indicator every second
+  setInterval(updateRefreshIndicator, 1000);
+  
+  console.log("Auto-refresh started: polling every 3 seconds");
+};
+
+// Stop auto-refresh (optional, for future use)
+const stopAutoRefresh = () => {
+  if (autoRefreshInterval) {
+    clearInterval(autoRefreshInterval);
+    autoRefreshInterval = null;
+    console.log("Auto-refresh stopped");
+  }
 };
 
 els.saveTokenBtn.onclick = async () => {
@@ -451,4 +513,7 @@ refreshProfiles().catch((error) => {
   const message = String(error.message ?? error);
   setStatus(els.profileActionStatus, message, "err");
   els.commandResult.textContent = message;
+}).finally(() => {
+  // Start auto-refresh after initial load
+  startAutoRefresh();
 });

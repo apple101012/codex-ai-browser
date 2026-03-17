@@ -4,6 +4,7 @@ import { chromium, firefox, type BrowserContext, type BrowserType, type Page } f
 import type { BrowserRuntime } from "./runtime.js";
 import type { BrowserCommand, CommandExecutionResult } from "../domain/commands.js";
 import type { ProfileRecord } from "../domain/profile.js";
+import type { ProfileStore } from "../storage/profileStore.js";
 
 type PageCommand = Exclude<
   BrowserCommand,
@@ -26,6 +27,7 @@ export interface PlaywrightRuntimeOptions {
   artifactsDir: string;
   defaultHeadless: boolean;
   allowEvaluate: boolean;
+  profileStore?: ProfileStore;
 }
 
 export class PlaywrightRuntime implements BrowserRuntime {
@@ -34,11 +36,13 @@ export class PlaywrightRuntime implements BrowserRuntime {
   private readonly artifactsDir: string;
   private readonly defaultHeadless: boolean;
   private readonly allowEvaluate: boolean;
+  private readonly profileStore?: ProfileStore;
 
   constructor(options: PlaywrightRuntimeOptions) {
     this.artifactsDir = options.artifactsDir;
     this.defaultHeadless = options.defaultHeadless;
     this.allowEvaluate = options.allowEvaluate;
+    this.profileStore = options.profileStore;
   }
 
   async start(profile: ProfileRecord): Promise<void> {
@@ -70,6 +74,9 @@ export class PlaywrightRuntime implements BrowserRuntime {
       this.markSessionClosed(session);
     });
     this.sessions.set(profile.id, session);
+
+    // Restore saved tabs if available
+    await this.restoreSavedTabs(session, profile);
   }
 
   async stop(profileId: string): Promise<void> {
@@ -77,6 +84,10 @@ export class PlaywrightRuntime implements BrowserRuntime {
     if (!session) {
       return;
     }
+    
+    // Save current tabs before stopping
+    await this.saveCurrentTabs(session);
+    
     this.markSessionClosed(session);
     await this.closeContext(session.context);
   }
@@ -315,6 +326,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
   private async launchContext(profile: ProfileRecord): Promise<BrowserContext> {
     const browserType = this.resolveBrowserType(profile.engine);
     const channel = this.resolveChannel(profile.engine);
+    const isFirefox = profile.engine === "firefox";
+    
     const launchOptions = {
       headless: profile.settings.headless ?? this.defaultHeadless,
       proxy: profile.settings.proxy
@@ -327,7 +340,24 @@ export class PlaywrightRuntime implements BrowserRuntime {
       userAgent: profile.settings.userAgent,
       channel,
       ignoreDefaultArgs: channel ? ["--enable-automation"] : undefined,
-      args: channel ? ["--disable-blink-features=AutomationControlled"] : undefined
+      args: channel ? ["--disable-blink-features=AutomationControlled"] : undefined,
+      // Firefox-specific preferences to enable keyboard shortcuts in automation mode
+      // Note: These preferences allow MANUAL keyboard shortcuts by the user,
+      // but programmatic shortcuts via page.keyboard.press() may still be limited
+      firefoxUserPrefs: isFirefox
+        ? {
+            // Key preferences for enabling manual keyboard shortcuts:
+            // Disable WebDriver mode that blocks browser shortcuts
+            "dom.webdriver.enabled": false,
+            // Allow full browser functionality (not restricted automation mode)
+            "marionette.webdriver": false,
+            // Ensure keyboard shortcuts are enabled
+            "browser.shortcuts.enabled": true,
+            // Additional preferences for better compatibility
+            "browser.tabs.remote.autostart": true,
+            "browser.tabs.remote.autostart.2": true
+          }
+        : undefined
     };
 
     try {
@@ -379,8 +409,11 @@ export class PlaywrightRuntime implements BrowserRuntime {
 
     const openPages = session.context.pages().filter((page) => !page.isClosed());
     if (openPages.length === 0) {
-      this.markSessionClosed(session);
-      void this.closeContext(session.context);
+      // Save tabs before marking session as closed
+      void this.saveCurrentTabs(session).then(() => {
+        this.markSessionClosed(session);
+        void this.closeContext(session.context);
+      });
     }
   }
 
@@ -399,6 +432,96 @@ export class PlaywrightRuntime implements BrowserRuntime {
       await closePromise;
     } finally {
       this.pendingContextCloses.delete(closePromise);
+    }
+  }
+
+  private async saveCurrentTabs(session: SessionState): Promise<void> {
+    if (!this.profileStore) {
+      return;
+    }
+
+    try {
+      const tabs = await this.listTabs(session.profileId, session);
+      if (tabs.length === 0) {
+        return;
+      }
+
+      // Filter out empty/invalid URLs and map to saved tab format
+      const savedTabs = tabs
+        .filter((tab) => tab.url && !tab.url.startsWith("about:") && tab.url !== "chrome://newtab/")
+        .map((tab) => ({
+          url: tab.url,
+          active: tab.active
+        }));
+
+      if (savedTabs.length > 0) {
+        await this.profileStore.saveTabs(session.profileId, savedTabs);
+      }
+    } catch (error) {
+      // Ignore errors during tab saving to not block shutdown
+      console.error(`Failed to save tabs for profile ${session.profileId}:`, error);
+    }
+  }
+
+  private async restoreSavedTabs(session: SessionState, profile: ProfileRecord): Promise<void> {
+    if (!profile.savedTabs || profile.savedTabs.length === 0) {
+      return;
+    }
+
+    try {
+      // Get current pages
+      const currentPages = session.context.pages().filter((page) => !page.isClosed());
+      
+      // Restore each saved tab
+      let activePageRestored = false;
+      const restoredPages: Page[] = [];
+      
+      for (const savedTab of profile.savedTabs) {
+        try {
+          // Validate URL before navigating
+          new URL(savedTab.url);
+          
+          const page = await session.context.newPage();
+          await page.goto(savedTab.url, { waitUntil: "domcontentloaded", timeout: 10000 });
+          restoredPages.push(page);
+          
+          if (savedTab.active) {
+            session.activePage = page;
+            activePageRestored = true;
+          }
+        } catch (error) {
+          // Skip invalid URLs or navigation failures
+          console.warn(`Failed to restore tab ${savedTab.url}:`, error);
+        }
+      }
+
+      // Close the initial empty page if we successfully restored tabs
+      if (restoredPages.length > 0 && currentPages.length === 1) {
+        const initialPage = currentPages[0];
+        if (initialPage && (initialPage.url() === "about:blank" || initialPage.url() === "chrome://newtab/")) {
+          await initialPage.close();
+        }
+      }
+
+      // If no active page was restored, use the first restored or available page
+      if (!activePageRestored) {
+        if (restoredPages.length > 0) {
+          session.activePage = restoredPages[0] as Page;
+        } else {
+          const pages = session.context.pages().filter((page) => !page.isClosed());
+          if (pages.length > 0) {
+            session.activePage = pages[0] as Page;
+          }
+        }
+      }
+
+      // Bring active page to front
+      if (!session.activePage.isClosed()) {
+        await session.activePage.bringToFront();
+      }
+    } catch (error) {
+      // If restoration fails, log but don't crash
+      console.error(`Failed to restore tabs for profile ${profile.id}:`, error);
     }
   }
 }

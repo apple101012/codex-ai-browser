@@ -78,6 +78,24 @@ export const OpenGeminiSessionToolInputSchema = z.object({
   targetUrl: z.string().url().optional()
 });
 
+export const ListBackupsToolInputSchema = z.object({
+  profileId: z.string().uuid().optional(),
+  limit: z.number().int().min(1).max(500).optional()
+});
+
+export const BackupProfileToolInputSchema = z.object({
+  profileId: z.string().uuid(),
+  destinationDir: z.string().min(1).optional(),
+  label: z.string().min(1).max(200).optional()
+});
+
+export const RestoreProfileBackupToolInputSchema = z.object({
+  profileId: z.string().uuid(),
+  backupId: z.string().uuid(),
+  autoStart: z.boolean().optional(),
+  setActive: z.boolean().optional()
+});
+
 export const ToolDescriptions = {
   listProfiles: "List all persisted browser profiles and currently running profiles.",
   createProfile:
@@ -97,5 +115,10 @@ export const ToolDescriptions = {
   ensureGeminiProfile:
     "Create or reconcile a Gemini-ready persistent profile that reuses local Gemini login session data.",
   openGeminiSession:
-    "Open a Gemini session in the persistent Gemini profile, and optionally set it as active takeover profile."
+    "Open a Gemini session in the persistent Gemini profile, and optionally set it as active takeover profile.",
+  listBackups: "List profile backups (optionally filtered by profile id).",
+  backupProfile:
+    "Create a point-in-time backup of a profile data directory. You can pass destinationDir for VPS-mounted backup paths.",
+  restoreProfileBackup:
+    "Restore a profile from a previously created backup id, with optional auto-start and active takeover selection."
 };

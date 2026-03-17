@@ -21,3 +21,5 @@ playwright-profiles/
 *.sqlite-shm
 *.sqlite-wal
 *.ldb
+response.html
+profiles-backup-*
