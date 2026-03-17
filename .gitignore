@@ -23,3 +23,15 @@ playwright-profiles/
 *.ldb
 response.html
 profiles-backup-*
+
+# Project Exclusions (Test files, READMEs, etc.)
+tests/
+docs/
+tools/
+*.md
+test-*
+demo-*
+VALIDATE_*.js
+*.txt
+*.ics
+!LICENSE
