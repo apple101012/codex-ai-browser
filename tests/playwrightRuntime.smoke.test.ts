@@ -28,6 +28,7 @@ describeBrowser("PlaywrightRuntime smoke", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       dataDir: path.join(root, "profile"),
+      managedDataDir: true,
       settings: {
         headless: true
       }
@@ -56,4 +57,3 @@ describeBrowser("PlaywrightRuntime smoke", () => {
     await runtime.stopAll();
   });
 });
-

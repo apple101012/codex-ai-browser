@@ -15,7 +15,8 @@ export const CreateProfileToolInputSchema = z.object({
   engine: EngineSchema.optional(),
   userAgent: z.string().optional(),
   headless: z.boolean().optional(),
-  proxy: ProxySettingsSchema
+  proxy: ProxySettingsSchema,
+  externalDataDir: z.string().min(1).optional()
 });
 
 export const UpdateProfileToolInputSchema = z.object({
@@ -24,7 +25,8 @@ export const UpdateProfileToolInputSchema = z.object({
   engine: EngineSchema.optional(),
   userAgent: z.string().optional(),
   headless: z.boolean().optional(),
-  proxy: ProxySettingsSchema
+  proxy: ProxySettingsSchema,
+  externalDataDir: z.string().min(1).optional()
 });
 
 export const ProfileIdToolInputSchema = z.object({
@@ -45,6 +47,30 @@ export const RunCommandsToolInputSchema = z.object({
     .min(1)
 });
 
+export const SetActiveProfileToolInputSchema = z.object({
+  profileId: z.string().uuid(),
+  autoStart: z.boolean().optional()
+});
+
+export const RunActiveCommandsToolInputSchema = z.object({
+  autoStart: z.boolean().optional(),
+  commands: z
+    .array(
+      z
+        .object({
+          type: z.string().min(1)
+        })
+        .passthrough()
+    )
+    .min(1)
+});
+
+export const EnsureGeminiProfileToolInputSchema = z.object({
+  externalDataDir: z.string().min(1).optional(),
+  forceUpdate: z.boolean().optional(),
+  userAgent: z.string().optional()
+});
+
 export const ToolDescriptions = {
   listProfiles: "List all persisted browser profiles and currently running profiles.",
   createProfile:
@@ -55,6 +81,12 @@ export const ToolDescriptions = {
   stopProfile: "Stop a running browser context for a profile.",
   runCommands:
     "Run one or more browser commands for a profile (navigate, click, type, extract text, screenshot, etc.).",
-  getProfile: "Get profile details and running state."
+  getProfile: "Get profile details and running state.",
+  setActiveProfile:
+    "Mark a profile as the active takeover target so future active commands can control it directly.",
+  runActiveCommands:
+    "Run commands on the currently selected active/takeover profile without providing profile id each call.",
+  getControlState: "Get active takeover profile state.",
+  ensureGeminiProfile:
+    "Create or reconcile a Gemini-ready persistent profile that reuses local Gemini login session data."
 };
-

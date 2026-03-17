@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+release/
 .env
 .env.local
 .env.*.local
@@ -12,4 +13,4 @@ tmp/
 *.log
 *.local.json
 *.tmp
-
+*.exe

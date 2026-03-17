@@ -56,5 +56,26 @@ describe("ProfileStore", () => {
     const empty = await store.list();
     expect(empty).toHaveLength(0);
   });
-});
 
+  it("supports external profile directories without deleting external data", async () => {
+    const root = await createTempDir("profile-store-external-");
+    dirsToClean.push(root);
+
+    const externalDir = path.join(root, "external-gemini-profile");
+    const store = new ProfileStore(path.join(root, "profiles"));
+    await store.init();
+
+    const created = await store.create({
+      name: "Gemini Persistent",
+      engine: "chromium",
+      externalDataDir: externalDir,
+      settings: { headless: false }
+    });
+
+    expect(created.managedDataDir).toBe(false);
+    expect(created.dataDir).toBe(externalDir);
+
+    const deleted = await store.delete(created.id);
+    expect(deleted).toBe(true);
+  });
+});

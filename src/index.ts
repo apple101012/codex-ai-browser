@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { buildServer } from "./api/server.js";
 import { ProfileStore } from "./storage/profileStore.js";
 import { PlaywrightRuntime } from "./browser/playwrightRuntime.js";
+import { ActiveControlStore } from "./control/activeControlStore.js";
 
 const start = async (): Promise<void> => {
   const config = loadConfig();
@@ -18,8 +19,9 @@ const start = async (): Promise<void> => {
     defaultHeadless: config.defaultHeadless,
     allowEvaluate: config.allowEvaluate
   });
+  const controlStore = new ActiveControlStore();
 
-  const app = buildServer({ config, store, runtime });
+  const app = buildServer({ config, store, runtime, controlStore });
 
   const shutdown = async (): Promise<void> => {
     await runtime.stopAll();
@@ -40,4 +42,3 @@ start().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-

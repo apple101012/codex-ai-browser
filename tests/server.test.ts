@@ -5,18 +5,21 @@ import { ProfileStore } from "../src/storage/profileStore.js";
 import { InMemoryRuntime } from "../src/browser/inMemoryRuntime.js";
 import { createTempDir, removeDir } from "./testUtils.js";
 import type { AppConfig } from "../src/config.js";
+import { ActiveControlStore } from "../src/control/activeControlStore.js";
 
 describe("HTTP API", () => {
   let tempDir: string;
   let store: ProfileStore;
   let runtime: InMemoryRuntime;
   let app: ReturnType<typeof buildServer>;
+  let controlStore: ActiveControlStore;
 
   beforeEach(async () => {
     tempDir = await createTempDir("server-test-");
     store = new ProfileStore(path.join(tempDir, "profiles"));
     await store.init();
     runtime = new InMemoryRuntime();
+    controlStore = new ActiveControlStore();
 
     const config: AppConfig = {
       host: "127.0.0.1",
@@ -24,12 +27,13 @@ describe("HTTP API", () => {
       dataDir: tempDir,
       profilesDir: path.join(tempDir, "profiles"),
       artifactsDir: path.join(tempDir, "artifacts"),
+      publicDir: path.join(process.cwd(), "public"),
       defaultHeadless: true,
       allowEvaluate: false,
       apiToken: "test-token"
     };
 
-    app = buildServer({ config, store, runtime });
+    app = buildServer({ config, store, runtime, controlStore });
     await app.ready();
   });
 
@@ -45,6 +49,15 @@ describe("HTTP API", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("serves the control UI without auth", async () => {
+    const response = await app.inject({
+      method: "GET",
+      path: "/app"
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("Codex AI Browser Control");
   });
 
   it("creates profiles and executes commands", async () => {
@@ -108,5 +121,55 @@ describe("HTTP API", () => {
     const payload = update.json<{ profile: { settings: { userAgent?: string } } }>();
     expect(payload.profile.settings.userAgent).toBe("Spoofed/5.0");
   });
-});
 
+  it("supports active-profile takeover control", async () => {
+    const create = await app.inject({
+      method: "POST",
+      path: "/profiles",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        name: "Takeover profile",
+        engine: "chromium",
+        settings: {}
+      }
+    });
+    const created = create.json<{ profile: { id: string } }>();
+
+    const setActive = await app.inject({
+      method: "POST",
+      path: "/control/active-profile",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        profileId: created.profile.id,
+        autoStart: true
+      }
+    });
+    expect(setActive.statusCode).toBe(200);
+
+    const run = await app.inject({
+      method: "POST",
+      path: "/control/active/commands",
+      headers: { authorization: "Bearer test-token" },
+      payload: {
+        commands: [{ type: "getPageState", includeTextExcerpt: true }]
+      }
+    });
+    expect(run.statusCode).toBe(200);
+    const payload = run.json<{ activeProfileId: string; successCount: number }>();
+    expect(payload.activeProfileId).toBe(created.profile.id);
+    expect(payload.successCount).toBe(1);
+  });
+
+  it("creates gemini profile preset", async () => {
+    const ensure = await app.inject({
+      method: "POST",
+      path: "/profiles/ensure/gemini",
+      headers: { authorization: "Bearer test-token" },
+      payload: {}
+    });
+    expect(ensure.statusCode).toBe(200);
+    const payload = ensure.json<{ profile?: { name: string; managedDataDir: boolean } }>();
+    expect(payload.profile?.name).toBe("Gemini Persistent");
+    expect(payload.profile?.managedDataDir).toBe(false);
+  });
+});

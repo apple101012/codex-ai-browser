@@ -4,8 +4,11 @@ import { z } from "zod";
 import { apiRequest } from "./mcp/apiClient.js";
 import {
   CreateProfileToolInputSchema,
+  EnsureGeminiProfileToolInputSchema,
   ProfileIdToolInputSchema,
+  RunActiveCommandsToolInputSchema,
   RunCommandsToolInputSchema,
+  SetActiveProfileToolInputSchema,
   ToolDescriptions,
   UpdateProfileToolInputSchema
 } from "./mcp/toolSchemas.js";
@@ -55,6 +58,7 @@ server.registerTool(
       engine: z.enum(["chromium", "firefox"]).optional(),
       userAgent: z.string().optional(),
       headless: z.boolean().optional(),
+      externalDataDir: z.string().min(1).optional(),
       proxy: z
         .object({
           server: z.string().min(3),
@@ -75,7 +79,8 @@ server.registerTool(
           userAgent: parsed.userAgent,
           headless: parsed.headless,
           proxy: parsed.proxy
-        }
+        },
+        externalDataDir: parsed.externalDataDir
       })
     });
 
@@ -93,6 +98,7 @@ server.registerTool(
       engine: z.enum(["chromium", "firefox"]).optional(),
       userAgent: z.string().optional(),
       headless: z.boolean().optional(),
+      externalDataDir: z.string().min(1).optional(),
       proxy: z
         .object({
           server: z.string().min(3),
@@ -113,10 +119,99 @@ server.registerTool(
           userAgent: parsed.userAgent,
           headless: parsed.headless,
           proxy: parsed.proxy
-        }
+        },
+        externalDataDir: parsed.externalDataDir
       })
     });
 
+    return toText(payload);
+  }
+);
+
+server.registerTool(
+  "ensure_gemini_profile",
+  {
+    description: ToolDescriptions.ensureGeminiProfile,
+    inputSchema: {
+      externalDataDir: z.string().min(1).optional(),
+      forceUpdate: z.boolean().optional(),
+      userAgent: z.string().optional()
+    }
+  },
+  async (input) => {
+    const parsed = EnsureGeminiProfileToolInputSchema.parse(input);
+    const payload = await apiRequest("/profiles/ensure/gemini", {
+      method: "POST",
+      body: JSON.stringify({
+        externalDataDir: parsed.externalDataDir,
+        forceUpdate: parsed.forceUpdate ?? false,
+        userAgent: parsed.userAgent
+      })
+    });
+    return toText(payload);
+  }
+);
+
+server.registerTool(
+  "get_control_state",
+  {
+    description: ToolDescriptions.getControlState,
+    inputSchema: {}
+  },
+  async () => {
+    const payload = await apiRequest("/control/state");
+    return toText(payload);
+  }
+);
+
+server.registerTool(
+  "set_active_profile",
+  {
+    description: ToolDescriptions.setActiveProfile,
+    inputSchema: {
+      profileId: z.string().uuid(),
+      autoStart: z.boolean().optional()
+    }
+  },
+  async (input) => {
+    const parsed = SetActiveProfileToolInputSchema.parse(input);
+    const payload = await apiRequest("/control/active-profile", {
+      method: "POST",
+      body: JSON.stringify({
+        profileId: parsed.profileId,
+        autoStart: parsed.autoStart ?? true
+      })
+    });
+    return toText(payload);
+  }
+);
+
+server.registerTool(
+  "run_active_commands",
+  {
+    description: ToolDescriptions.runActiveCommands,
+    inputSchema: {
+      autoStart: z.boolean().optional(),
+      commands: z
+        .array(
+          z
+            .object({
+              type: z.string().min(1)
+            })
+            .passthrough()
+        )
+        .min(1)
+    }
+  },
+  async (input) => {
+    const parsed = RunActiveCommandsToolInputSchema.parse(input);
+    const payload = await apiRequest("/control/active/commands", {
+      method: "POST",
+      body: JSON.stringify({
+        autoStart: parsed.autoStart ?? true,
+        commands: parsed.commands
+      })
+    });
     return toText(payload);
   }
 );
@@ -195,4 +290,3 @@ main().catch((error) => {
   console.error("MCP server failed:", error);
   process.exit(1);
 });
-

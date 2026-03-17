@@ -4,6 +4,10 @@ AI-focused, multi-profile browser runtime with:
 - Persistent profile state (`userDataDir`) for unlimited local profiles
 - Per-profile proxy + user-agent spoofing controls
 - HTTP API for deterministic browser commands
+- Active profile takeover mode (you pick the live profile, AI controls that one)
+- Built-in Gemini persistent profile bootstrap
+- Browser control UI at `/app`
+- Desktop wrapper support (Electron)
 - MCP server for Codex / Claude / Gemini CLI integrations
 - Testable architecture with unit and integration tests
 
@@ -28,6 +32,13 @@ This project is designed so an AI agent can fully control browser sessions while
   - `getPageState`
   - `screenshot`
   - `evaluate` (disabled by default for safety)
+- Control/takeover API:
+  - `GET /control/state`
+  - `POST /control/active-profile`
+  - `POST /control/active/commands`
+  - `POST /control/release`
+- Preset profile API:
+  - `POST /profiles/ensure/gemini`
 - MCP tools:
   - `list_profiles`
   - `get_profile`
@@ -36,6 +47,10 @@ This project is designed so an AI agent can fully control browser sessions while
   - `start_profile`
   - `stop_profile`
   - `run_commands`
+  - `ensure_gemini_profile`
+  - `get_control_state`
+  - `set_active_profile`
+  - `run_active_commands`
 
 ## Quick Start
 
@@ -47,6 +62,7 @@ npm run start
 ```
 
 API default: `http://127.0.0.1:4321`
+UI default: `http://127.0.0.1:4321/app`
 
 ## Run MCP Server
 
@@ -59,6 +75,32 @@ npm run mcp
 Environment variables:
 - `API_BASE_URL` (default `http://127.0.0.1:4321`)
 - `API_TOKEN` (must match API token if configured on server)
+
+## Gemini Profile Setup
+
+This project can reuse the same persistent Gemini profile path used by your `gemini-persistent-browser` skill.
+
+```bash
+npm run profile:gemini
+```
+
+Default profile path:
+`C:\Users\<you>\.codex\playwright-profiles\gemini`
+
+You can also create/reconcile it through API:
+
+```bash
+curl -X POST http://127.0.0.1:4321/profiles/ensure/gemini \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+## Takeover Flow (Manual -> AI)
+
+1. Open UI: `http://127.0.0.1:4321/app`
+2. Start profile and click `Set Active` for the browser you are currently using.
+3. AI clients call `run_active_commands` (MCP) or `POST /control/active/commands` (API).
+4. Use `Release Active Profile` when done.
 
 ## Minimal API Examples
 
@@ -109,12 +151,32 @@ npm run test
 
 Current automated coverage focuses on store logic, API behavior, and command schema validation.
 
+## Desktop App (Windows)
+
+Run desktop app in dev:
+
+```bash
+npm run desktop:dev
+```
+
+Build Windows package:
+
+```bash
+npm run desktop:build
+```
+
+If portable packaging fails due Windows symlink privileges, use the unpacked executable in:
+
+`release\win-unpacked\Codex AI Browser.exe`
+
 ## Project Plan Artifacts
 
 - [Architecture](./docs/ARCHITECTURE.md)
 - [Security Checklist](./docs/SECURITY_CHECKLIST.md)
 - [Planning Agents](./docs/planning-agents.md)
 - [Research Notes](./docs/research-notes.md)
+- [Gemini Integration](./docs/GEMINI_INTEGRATION.md)
+- [Desktop Build Notes](./docs/DESKTOP_BUILD.md)
 
 ## Publishing as Public GitHub Repo
 

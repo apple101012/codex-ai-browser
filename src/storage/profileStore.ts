@@ -42,11 +42,18 @@ export class ProfileStore {
     return records.find((record) => record.id === profileId) ?? null;
   }
 
+  async findByName(name: string): Promise<ProfileRecord | null> {
+    const records = await this.readIndex();
+    return records.find((record) => record.name.toLowerCase() === name.trim().toLowerCase()) ?? null;
+  }
+
   async create(input: CreateProfileInput): Promise<ProfileRecord> {
     const payload = CreateProfileInputSchema.parse(input);
     const now = new Date().toISOString();
     const id = randomUUID();
-    const dataDir = path.join(this.profileDataDir, id);
+    const externalDataDir = payload.externalDataDir?.trim();
+    const dataDir = externalDataDir ? path.resolve(externalDataDir) : path.join(this.profileDataDir, id);
+    const managedDataDir = !externalDataDir;
 
     await mkdir(dataDir, { recursive: true });
 
@@ -57,7 +64,8 @@ export class ProfileStore {
       settings: payload.settings,
       createdAt: now,
       updatedAt: now,
-      dataDir
+      dataDir,
+      managedDataDir
     });
 
     const records = await this.readIndex();
@@ -87,8 +95,12 @@ export class ProfileStore {
         ...(payload.settings ?? {}),
         proxy: payload.settings?.proxy === undefined ? current.settings.proxy : payload.settings.proxy
       },
+      dataDir: payload.externalDataDir ? path.resolve(payload.externalDataDir.trim()) : current.dataDir,
+      managedDataDir: payload.externalDataDir ? false : current.managedDataDir,
       updatedAt: new Date().toISOString()
     });
+
+    await mkdir(nextRecord.dataDir, { recursive: true });
 
     records[index] = nextRecord;
     await this.writeIndex(records);
@@ -104,7 +116,9 @@ export class ProfileStore {
 
     const nextRecords = records.filter((record) => record.id !== profileId);
     await this.writeIndex(nextRecords);
-    await rm(existing.dataDir, { recursive: true, force: true });
+    if (existing.managedDataDir) {
+      await rm(existing.dataDir, { recursive: true, force: true });
+    }
     return true;
   }
 

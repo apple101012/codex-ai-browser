@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codex AI Browser Control</title>
+    <link rel="stylesheet" href="/app/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="hero">
+        <h1>Codex AI Browser Control</h1>
+        <p>Launch profiles yourself, then let AI take over the selected profile.</p>
+      </header>
+
+      <section class="panel">
+        <h2>Connection</h2>
+        <div class="row">
+          <label for="apiToken">API Token (optional)</label>
+          <input id="apiToken" type="password" placeholder="Paste API token if enabled" />
+          <button id="saveTokenBtn">Save Token</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Gemini Profile</h2>
+        <div class="row">
+          <button id="ensureGeminiBtn">Ensure Gemini Profile</button>
+          <span id="geminiStatus"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Takeover State</h2>
+        <p id="activeState">Active profile: none</p>
+        <div class="row">
+          <button id="refreshBtn">Refresh</button>
+          <button id="releaseBtn">Release Active Profile</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Profiles</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>ID</th>
+              <th>Engine</th>
+              <th>Running</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="profilesBody"></tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Quick Test Command (Active Profile)</h2>
+        <div class="row">
+          <input id="targetUrl" type="url" placeholder="https://gemini.google.com/" />
+          <button id="goBtn">Navigate Active Profile</button>
+        </div>
+        <pre id="commandResult"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="/app/app.js"></script>
+  </body>
+</html>
+

@@ -24,21 +24,23 @@ export const ProfileRecordSchema = z.object({
   settings: ProfileSettingsSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  dataDir: z.string().min(1)
+  dataDir: z.string().min(1),
+  managedDataDir: z.boolean().default(true)
 });
 export type ProfileRecord = z.infer<typeof ProfileRecordSchema>;
 
 export const CreateProfileInputSchema = z.object({
   name: z.string().min(1).max(200),
   engine: BrowserEngineSchema.default("chromium"),
-  settings: ProfileSettingsSchema.default({})
+  settings: ProfileSettingsSchema.default({}),
+  externalDataDir: z.string().min(1).optional()
 });
 export type CreateProfileInput = z.infer<typeof CreateProfileInputSchema>;
 
 export const UpdateProfileInputSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   engine: BrowserEngineSchema.optional(),
-  settings: ProfileSettingsSchema.partial().optional()
+  settings: ProfileSettingsSchema.partial().optional(),
+  externalDataDir: z.string().min(1).optional()
 });
 export type UpdateProfileInput = z.infer<typeof UpdateProfileInputSchema>;
-

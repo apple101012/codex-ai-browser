@@ -22,6 +22,7 @@ export interface AppConfig {
   dataDir: string;
   profilesDir: string;
   artifactsDir: string;
+  publicDir: string;
   apiToken?: string;
   defaultHeadless: boolean;
   allowEvaluate: boolean;
@@ -33,6 +34,7 @@ export const loadConfig = (): AppConfig => {
   const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR ?? "./data");
   const profilesDir = path.join(dataDir, "profiles");
   const artifactsDir = path.join(dataDir, "artifacts");
+  const publicDir = path.resolve(process.cwd(), "public");
 
   return {
     host,
@@ -40,9 +42,9 @@ export const loadConfig = (): AppConfig => {
     dataDir,
     profilesDir,
     artifactsDir,
+    publicDir,
     apiToken: process.env.API_TOKEN?.trim() || undefined,
     defaultHeadless: parseBoolean(process.env.DEFAULT_HEADLESS, true),
     allowEvaluate: parseBoolean(process.env.ALLOW_EVALUATE, false)
   };
 };
-
