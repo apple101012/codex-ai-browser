@@ -114,6 +114,7 @@ Current automated coverage focuses on store logic, API behavior, and command sch
 - [Architecture](./docs/ARCHITECTURE.md)
 - [Security Checklist](./docs/SECURITY_CHECKLIST.md)
 - [Planning Agents](./docs/planning-agents.md)
+- [Research Notes](./docs/research-notes.md)
 
 ## Publishing as Public GitHub Repo
 
@@ -123,4 +124,3 @@ git add .
 git commit -m "Initial commit"
 gh repo create codex-ai-browser --public --source=. --remote=origin --push
 ```
-
