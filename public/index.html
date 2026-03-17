@@ -4,73 +4,184 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Codex AI Browser Control</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/app/styles.css" />
   </head>
   <body>
-    <main class="container">
-      <header class="hero">
-        <h1>Codex AI Browser Control</h1>
-        <p>Launch profiles yourself, then let AI take over the selected profile.</p>
+    <div class="app-layout">
+      <!-- Top Navigation Menu -->
+      <header class="top-nav">
+        <div class="logo-container">
+          <svg class="logo" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#00f2fe" />
+                <stop offset="100%" stop-color="#4facfe" />
+              </linearGradient>
+            </defs>
+            <rect x="10" y="20" width="80" height="60" rx="8" fill="none" stroke="url(#logoGrad)" stroke-width="6"/>
+            <circle cx="22" cy="30" r="3" fill="url(#logoGrad)"/>
+            <circle cx="34" cy="30" r="3" fill="url(#logoGrad)"/>
+            <line x1="10" y1="40" x2="90" y2="40" stroke="url(#logoGrad)" stroke-width="4"/>
+            <path d="M 40 60 L 50 50 L 60 60" stroke="url(#logoGrad)" stroke-width="4" fill="none" stroke-linecap="round"/>
+            <line x1="50" y1="50" x2="50" y2="70" stroke="url(#logoGrad)" stroke-width="4" stroke-linecap="round"/>
+          </svg>
+          <div class="logo-text">
+            <h2>Codex</h2>
+            <span>AI Browser</span>
+          </div>
+        </div>
+
+        <div class="nav-actions">
+          <div class="takeover-badge" id="takeoverBadge">
+            <span class="pulse-dot"></span>
+            <span id="activeState" style="margin-left:8px;">Active profile: none</span>
+          </div>
+        </div>
       </header>
 
-      <section class="panel">
-        <h2>Connection</h2>
-        <div class="row">
-          <label for="apiToken">API Token (optional)</label>
-          <input id="apiToken" type="password" placeholder="Paste API token if enabled" />
-          <button id="saveTokenBtn">Save Token</button>
-        </div>
-      </section>
+      <!-- Main Content Area -->
+      <main class="main-content">
+        <div class="content-grid">
+          
+          <!-- Column 1 (Left) -->
+          <div class="grid-col side-col">
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.1s;">
+              <div class="panel-header">
+                <h2>Connection</h2>
+              </div>
+              <div class="panel-body">
+                <div class="input-group">
+                  <label for="apiToken">API Token</label>
+                  <input id="apiToken" type="password" placeholder="Paste API token if enabled" />
+                </div>
+                <div class="action-row">
+                  <button id="saveTokenBtn" class="btn-primary">Save Token</button>
+                  <button id="clearTokenBtn" class="btn-secondary">Clear</button>
+                </div>
+              </div>
+            </section>
 
-      <section class="panel">
-        <h2>Gemini Profile</h2>
-        <div class="row">
-          <button id="ensureGeminiBtn">Ensure Gemini Profile</button>
-          <button id="openGeminiBtn">Open Gemini + Set Active</button>
-          <span id="geminiStatus"></span>
-        </div>
-      </section>
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.2s;">
+              <div class="panel-header">
+                <h2>Browser Presets</h2>
+              </div>
+              <div class="panel-body stack">
+                <button id="ensureBrowserBtn" class="btn-primary full-width">Ensure Browser Profile</button>
+                <button id="openGeminiBtn" class="btn-secondary full-width">Open Gemini In Browser</button>
+                <div id="geminiStatus" class="status-text mt-2"></div>
+              </div>
+            </section>
 
-      <section class="panel">
-        <h2>Takeover State</h2>
-        <p id="activeState">Active profile: none</p>
-        <div class="row">
-          <button id="refreshBtn">Refresh</button>
-          <button id="releaseBtn">Release Active Profile</button>
-        </div>
-      </section>
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.3s;">
+              <div class="panel-header">
+                <h2>Test Command</h2>
+              </div>
+              <div class="panel-body stack">
+                <div class="input-group">
+                  <input id="targetUrl" type="url" placeholder="https://example.com" />
+                </div>
+                <div class="action-row">
+                  <button id="goBtn" class="btn-primary">Navigate</button>
+                  <button id="listTabsBtn" class="btn-secondary">List Tabs</button>
+                </div>
+                
+                <div class="divider"></div>
+                
+                <div class="input-group row-group">
+                  <input id="tabIndexInput" type="number" min="0" placeholder="Tab index" />
+                  <button id="setTabBtn" class="btn-secondary">Set</button>
+                  <button id="readTabBtn" class="btn-secondary">Read</button>
+                </div>
+                
+                <pre id="commandResult" class="console-output"></pre>
+              </div>
+            </section>
+          </div>
 
-      <section class="panel">
-        <h2>Profiles</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>ID</th>
-              <th>Engine</th>
-              <th>Running</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="profilesBody"></tbody>
-        </table>
-      </section>
+          <!-- Column 2 (Right, Wider) -->
+          <div class="grid-col main-col">
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.15s;">
+              <div class="panel-header">
+                <h2>Create Browser Profile</h2>
+              </div>
+              <div class="panel-body">
+                <div class="form-grid">
+                  <div class="input-group">
+                    <label>Profile Name</label>
+                    <input id="profileName" type="text" placeholder="e.g., Worker 1" />
+                  </div>
+                  <div class="input-group">
+                    <label>Engine</label>
+                    <select id="profileEngine" class="custom-select">
+                      <option value="chrome">Chrome</option>
+                      <option value="msedge">Edge</option>
+                      <option value="chromium">Chromium</option>
+                      <option value="firefox">Firefox</option>
+                    </select>
+                  </div>
+                  <div class="input-group">
+                    <label>User Agent (optional)</label>
+                    <input id="profileUserAgent" type="text" placeholder="Custom user agent string" />
+                  </div>
+                  <div class="input-group">
+                    <label>Data Directory</label>
+                    <input id="profileDataDir" type="text" placeholder="External profile path" />
+                  </div>
+                </div>
+                
+                <div class="action-row mt-4 align-center space-between">
+                  <label class="checkbox-container">
+                    <input id="profileHeadless" type="checkbox" />
+                    <span class="checkmark"></span>
+                    Start hidden (headless)
+                  </label>
+                  <button id="createProfileBtn" class="btn-primary flex-auto-none">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    Create Profile
+                  </button>
+                </div>
+                <p id="profileActionStatus" class="status-text mt-2"></p>
+              </div>
+            </section>
 
-      <section class="panel">
-        <h2>Quick Test Command (Active Profile)</h2>
-        <div class="row">
-          <input id="targetUrl" type="url" placeholder="https://gemini.google.com/" />
-          <button id="goBtn">Navigate Active Profile</button>
-          <button id="listTabsBtn">List Tabs</button>
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.25s;">
+              <div class="panel-header space-between">
+                <h2>Running Profiles</h2>
+                <div class="action-row m-0">
+                  <button id="refreshBtn" class="btn-icon" title="Refresh">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                  </button>
+                  <button id="releaseBtn" class="btn-secondary btn-sm">Release Active</button>
+                  <button id="stopAllBtn" class="btn-danger btn-sm">Stop All</button>
+                </div>
+              </div>
+              <div class="panel-body p-0">
+                <div class="table-container">
+                  <table class="modern-table">
+                    <thead>
+                      <tr>
+                        <th>Profile Info</th>
+                        <th>Engine & UI</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="profilesBody">
+                      <!-- Populated via JS -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          </div>
+          
         </div>
-        <div class="row">
-          <input id="tabIndexInput" type="number" min="0" placeholder="Tab index (e.g., 2)" />
-          <button id="setTabBtn">Set Active Tab</button>
-          <button id="readTabBtn">Read Tab Text</button>
-        </div>
-        <pre id="commandResult"></pre>
-      </section>
-    </main>
+      </main>
+    </div>
+
+    <!-- Hidden original elements that might be expected by JS, mapping IDs if they don't cleanly fit -->
+    <!-- (They are all mapped above directly to maintain JS compatibility) -->
 
     <script type="module" src="/app/app.js"></script>
   </body>

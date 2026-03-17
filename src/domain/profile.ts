@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const BrowserEngineSchema = z.enum(["chromium", "firefox"]);
+export const BrowserEngineSchema = z.enum(["chrome", "msedge", "chromium", "firefox"]);
 export type BrowserEngine = z.infer<typeof BrowserEngineSchema>;
 
 export const ProxyConfigSchema = z.object({
@@ -31,7 +31,7 @@ export type ProfileRecord = z.infer<typeof ProfileRecordSchema>;
 
 export const CreateProfileInputSchema = z.object({
   name: z.string().min(1).max(200),
-  engine: BrowserEngineSchema.default("chromium"),
+  engine: BrowserEngineSchema.default("chrome"),
   settings: ProfileSettingsSchema.default({}),
   externalDataDir: z.string().min(1).optional()
 });

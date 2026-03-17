@@ -1,6 +1,6 @@
 {
   "name": "codex-ai-browser",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "description": "AI-focused multi-profile browser runtime with API + MCP control",
   "main": "electron/main.cjs",
   "scripts": {
@@ -12,6 +12,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "mcp": "tsx src/mcp.ts",
     "profile:gemini": "tsx src/scripts/ensureGeminiProfile.ts",
+    "practice:run": "tsx tools/practiceRun.ts",
+    "gemini:parallel-images": "tsx tools/geminiParallelImages.ts",
+    "qa:ui-subagents": "tsx tools/uiSubagentRun.ts",
+    "qa:ui-live": "tsx tools/uiLivePass.ts",
+    "qa:google-login-exe": "tsx tools/exeGoogleLoginCheck.ts",
     "desktop:dev": "npm run build && electron .",
     "desktop:build": "npm run build && electron-builder --win portable",
     "test:watch": "vitest",

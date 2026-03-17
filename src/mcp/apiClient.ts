@@ -1,20 +1,21 @@
-const API_BASE_URL = process.env.API_BASE_URL ?? "http://127.0.0.1:4321";
-const API_TOKEN = process.env.API_TOKEN;
+const getApiBaseUrl = (): string => process.env.API_BASE_URL ?? "http://127.0.0.1:4321";
+const getApiToken = (): string | undefined => process.env.API_TOKEN;
 
 const buildHeaders = (): HeadersInit => {
   const headers: HeadersInit = {
     "content-type": "application/json"
   };
 
-  if (API_TOKEN) {
-    headers.authorization = `Bearer ${API_TOKEN}`;
+  const apiToken = getApiToken();
+  if (apiToken) {
+    headers.authorization = `Bearer ${apiToken}`;
   }
 
   return headers;
 };
 
 export const apiRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
     headers: {
       ...buildHeaders(),
@@ -37,4 +38,3 @@ export const apiRequest = async <T>(path: string, init?: RequestInit): Promise<T
 
   return payload as T;
 };
-

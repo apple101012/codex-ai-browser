@@ -5,8 +5,8 @@ AI-focused, multi-profile browser runtime with:
 - Per-profile proxy + user-agent spoofing controls
 - HTTP API for deterministic browser commands
 - Active profile takeover mode (you pick the live profile, AI controls that one)
-- Built-in Gemini persistent profile bootstrap
-- One-shot Gemini opener (`/control/open-gemini`) for "open + set active + navigate"
+- Built-in persistent Browser Profile bootstrap (Gemini-ready)
+- Generic URL opener (`/control/open-url`) plus Gemini opener (`/control/open-gemini`)
 - Browser control UI at `/app`
 - Desktop wrapper support (Electron)
 - MCP server for Codex / Claude / Gemini CLI integrations
@@ -20,7 +20,7 @@ This project is designed so an AI agent can fully control browser sessions while
 
 - Unlimited profile records persisted on disk
 - Profile-level settings:
-  - `engine` (`chromium` or `firefox`)
+  - `engine` (`chrome`, `msedge`, `chromium`, or `firefox`)
   - `userAgent`
   - `proxy` (`server`, optional auth)
   - `headless`
@@ -43,8 +43,11 @@ This project is designed so an AI agent can fully control browser sessions while
   - `POST /control/active-profile`
   - `POST /control/active/commands`
   - `POST /control/release`
-- Preset profile API:
+- Browser profile API:
+  - `POST /profiles/ensure/browser`
   - `POST /profiles/ensure/gemini`
+  - `POST /profiles/stop-all`
+  - `POST /control/open-url`
   - `POST /control/open-gemini`
 - MCP tools:
   - `list_profiles`
@@ -93,6 +96,8 @@ npm run profile:gemini
 
 Default profile path:
 `C:\Users\<you>\.codex\playwright-profiles\gemini`
+
+For Google sign-in compatibility, managed Browser Profile presets default to `engine: "chrome"` and launch with reduced automation fingerprints.
 
 You can also create/reconcile it through API:
 
@@ -169,9 +174,11 @@ See [SECURITY.md](./SECURITY.md) for hardening guidance.
 ```bash
 npm run typecheck
 npm run test
+npm run qa:ui-subagents
 ```
 
 Current automated coverage focuses on store logic, API behavior, and command schema validation.
+The UI sub-agent run writes screenshots + grading reports under `artifacts/ui-subagents/`.
 
 ## Desktop App (Windows)
 

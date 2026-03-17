@@ -8,7 +8,7 @@ const ProxySettingsSchema = z
   })
   .optional();
 
-const EngineSchema = z.enum(["chromium", "firefox"]).default("chromium");
+const EngineSchema = z.enum(["chrome", "msedge", "chromium", "firefox"]).default("chrome");
 
 export const CreateProfileToolInputSchema = z.object({
   name: z.string().min(1),

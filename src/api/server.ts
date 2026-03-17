@@ -36,6 +36,16 @@ const SetActiveProfileSchema = z.object({
   autoStart: z.boolean().default(true)
 });
 
+const StartProfileSchema = z.object({
+  setActive: z.boolean().default(false)
+});
+
+const SetProfileVisibilitySchema = z.object({
+  visible: z.boolean(),
+  autoStart: z.boolean().default(false),
+  setActive: z.boolean().default(false)
+});
+
 const EnsureGeminiProfileSchema = z.object({
   externalDataDir: z.string().min(1).optional(),
   forceUpdate: z.boolean().default(false),
@@ -44,14 +54,20 @@ const EnsureGeminiProfileSchema = z.object({
 
 const OpenGeminiSessionSchema = z.object({
   externalDataDir: z.string().min(1).optional(),
-  forceUpdate: z.boolean().default(false),
+  forceUpdate: z.boolean().default(true),
   autoSetActive: z.boolean().default(true),
   targetUrl: z.string().url().default("https://gemini.google.com/")
 });
 
-const GEMINI_PROFILE_NAME = "Gemini Persistent";
-const DEFAULT_GEMINI_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
+const OpenUrlSchema = z.object({
+  url: z.string().url(),
+  profileId: z.string().uuid().optional(),
+  autoSetActive: z.boolean().default(true),
+  autoStart: z.boolean().default(true)
+});
+
+const DEFAULT_BROWSER_PROFILE_NAME = "Browser Profile";
+const LEGACY_GEMINI_PROFILE_NAME = "Gemini Persistent";
 
 export const buildServer = ({ config, store, runtime, controlStore }: AppDependencies) => {
   const app = Fastify({
@@ -71,6 +87,10 @@ export const buildServer = ({ config, store, runtime, controlStore }: AppDepende
 
   app.get("/app", async (_, reply) => {
     await reply.sendFile("index.html");
+  });
+
+  app.get("/", async (_, reply) => {
+    await reply.redirect("/app");
   });
 
   app.get("/health", async () => ({
@@ -101,6 +121,54 @@ export const buildServer = ({ config, store, runtime, controlStore }: AppDepende
       created: result.created,
       profile: result.profile,
       geminiProfileDir: result.geminiProfileDir
+    });
+  });
+
+  app.post("/profiles/ensure/browser", async (request, reply) => {
+    const payload = EnsureGeminiProfileSchema.parse(request.body ?? {});
+    const result = await ensureGeminiProfile(store, payload);
+
+    await reply.send({
+      created: result.created,
+      profile: result.profile,
+      browserProfileDir: result.geminiProfileDir
+    });
+  });
+
+  app.post("/control/open-url", async (request, reply) => {
+    const payload = OpenUrlSchema.parse(request.body ?? {});
+    let profile = payload.profileId ? await store.get(payload.profileId) : null;
+    if (!profile && controlStore.getState().activeProfileId) {
+      profile = await store.get(controlStore.getState().activeProfileId as string);
+    }
+
+    if (!profile) {
+      const managed = await ensureGeminiProfile(store, { forceUpdate: false });
+      profile = managed.profile;
+    }
+
+    if (!profile) {
+      await reply.code(500).send({ error: "Unable to resolve a browser profile." });
+      return;
+    }
+
+    if (payload.autoStart && !runtime.isRunning(profile.id)) {
+      await runtime.start(profile);
+    }
+
+    const commandResult = await runtime.execute(profile, {
+      type: "navigate",
+      url: payload.url
+    });
+
+    if (payload.autoSetActive) {
+      controlStore.setActiveProfile(profile.id);
+    }
+
+    await reply.send({
+      profile,
+      activeProfileId: payload.autoSetActive ? profile.id : controlStore.getState().activeProfileId,
+      navigate: commandResult
     });
   });
 
@@ -173,7 +241,9 @@ export const buildServer = ({ config, store, runtime, controlStore }: AppDepende
       return;
     }
 
-    await reply.send({ deleted: true });
+    const state =
+      controlStore.getState().activeProfileId === id ? controlStore.clearActiveProfile() : controlStore.getState();
+    await reply.send({ deleted: true, activeProfileId: state.activeProfileId });
   });
 
   app.post("/profiles/:id/start", async (request, reply) => {
@@ -183,13 +253,82 @@ export const buildServer = ({ config, store, runtime, controlStore }: AppDepende
     }
 
     await runtime.start(profile);
-    await reply.send({ started: true, profileId: profile.id });
+    const payload = StartProfileSchema.parse(request.body ?? {});
+    if (payload.setActive) {
+      controlStore.setActiveProfile(profile.id);
+    }
+    await reply.send({
+      started: true,
+      profileId: profile.id,
+      activeProfileId: payload.setActive ? profile.id : controlStore.getState().activeProfileId
+    });
   });
 
   app.post("/profiles/:id/stop", async (request, reply) => {
     const id = parseProfileId((request.params as { id?: string }).id);
     await runtime.stop(id);
-    await reply.send({ stopped: true, profileId: id });
+    const nextState =
+      controlStore.getState().activeProfileId === id ? controlStore.clearActiveProfile() : controlStore.getState();
+    await reply.send({
+      stopped: true,
+      profileId: id,
+      activeProfileId: nextState.activeProfileId
+    });
+  });
+
+  app.post("/profiles/:id/visibility", async (request, reply) => {
+    const id = parseProfileId((request.params as { id?: string }).id);
+    const payload = SetProfileVisibilitySchema.parse(request.body ?? {});
+    const existing = await store.get(id);
+    if (!existing) {
+      await reply.code(404).send({ error: "Profile not found." });
+      return;
+    }
+
+    const updated = await store.update(id, {
+      settings: {
+        headless: !payload.visible
+      }
+    });
+    if (!updated) {
+      await reply.code(404).send({ error: "Profile not found." });
+      return;
+    }
+
+    let restarted = false;
+    let started = false;
+    if (runtime.isRunning(id)) {
+      await runtime.stop(id);
+      await runtime.start(updated);
+      restarted = true;
+    } else if (payload.autoStart) {
+      await runtime.start(updated);
+      started = true;
+    }
+
+    if (payload.setActive) {
+      controlStore.setActiveProfile(id);
+    }
+
+    await reply.send({
+      profile: updated,
+      visible: updated.settings.headless === false,
+      restarted,
+      started,
+      activeProfileId: payload.setActive ? id : controlStore.getState().activeProfileId
+    });
+  });
+
+  app.post("/profiles/stop-all", async (_, reply) => {
+    const runningProfileIds = runtime.listRunningIds();
+    await runtime.stopAll();
+    const state = controlStore.clearActiveProfile();
+    await reply.send({
+      stopped: true,
+      stoppedCount: runningProfileIds.length,
+      stoppedProfileIds: runningProfileIds,
+      activeProfileId: state.activeProfileId
+    });
   });
 
   app.post("/profiles/:id/commands", async (request, reply) => {
@@ -345,30 +484,36 @@ const ensureGeminiProfile = async (
     payload.externalDataDir ?? path.join(os.homedir(), ".codex", "playwright-profiles", "gemini")
   );
 
-  const existing = await store.findByName(GEMINI_PROFILE_NAME);
+  const existingByDefaultName = await store.findByName(DEFAULT_BROWSER_PROFILE_NAME);
+  const existingByLegacyName = existingByDefaultName ? null : await store.findByName(LEGACY_GEMINI_PROFILE_NAME);
+  const existing = existingByDefaultName ?? existingByLegacyName;
   let profile: ProfileRecord | null = existing;
   let created = false;
 
   if (!existing) {
     profile = await store.create({
-      name: GEMINI_PROFILE_NAME,
-      engine: "chromium",
+      name: DEFAULT_BROWSER_PROFILE_NAME,
+      engine: "chrome",
       externalDataDir: geminiDir,
       settings: {
         headless: false,
-        userAgent: payload.userAgent ?? DEFAULT_GEMINI_USER_AGENT
+        userAgent: payload.userAgent
       }
     });
     created = true;
-  } else if (payload.forceUpdate || existing.dataDir !== geminiDir) {
+  } else if (payload.forceUpdate || existing.dataDir !== geminiDir || payload.userAgent !== undefined) {
+    const nextUserAgent = payload.userAgent ?? (payload.forceUpdate ? undefined : existing.settings.userAgent);
     profile = await store.update(existing.id, {
-      engine: "chromium",
+      name: DEFAULT_BROWSER_PROFILE_NAME,
+      engine: "chrome",
       externalDataDir: geminiDir,
       settings: {
         headless: false,
-        userAgent: payload.userAgent ?? existing.settings.userAgent ?? DEFAULT_GEMINI_USER_AGENT
+        userAgent: nextUserAgent
       }
     });
+  } else if (existing.name !== DEFAULT_BROWSER_PROFILE_NAME) {
+    profile = await store.update(existing.id, { name: DEFAULT_BROWSER_PROFILE_NAME });
   }
 
   return {

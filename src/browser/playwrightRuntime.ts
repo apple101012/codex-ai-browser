@@ -15,8 +15,11 @@ type PageCommand = Exclude<
 >;
 
 interface SessionState {
+  profileId: string;
   context: BrowserContext;
   activePage: Page;
+  closed: boolean;
+  boundPages: WeakSet<Page>;
 }
 
 export interface PlaywrightRuntimeOptions {
@@ -27,6 +30,7 @@ export interface PlaywrightRuntimeOptions {
 
 export class PlaywrightRuntime implements BrowserRuntime {
   private readonly sessions = new Map<string, SessionState>();
+  private readonly pendingContextCloses = new Set<Promise<void>>();
   private readonly artifactsDir: string;
   private readonly defaultHeadless: boolean;
   private readonly allowEvaluate: boolean;
@@ -38,28 +42,34 @@ export class PlaywrightRuntime implements BrowserRuntime {
   }
 
   async start(profile: ProfileRecord): Promise<void> {
-    if (this.sessions.has(profile.id)) {
+    if (this.isRunning(profile.id)) {
       return;
     }
 
     await mkdir(profile.dataDir, { recursive: true });
     await mkdir(this.artifactsDir, { recursive: true });
 
-    const browserType = this.resolveBrowserType(profile.engine);
-    const context = await browserType.launchPersistentContext(profile.dataDir, {
-      headless: profile.settings.headless ?? this.defaultHeadless,
-      proxy: profile.settings.proxy
-        ? {
-            server: profile.settings.proxy.server,
-            username: profile.settings.proxy.username,
-            password: profile.settings.proxy.password
-          }
-        : undefined,
-      userAgent: profile.settings.userAgent
+    const context = await this.launchContext(profile);
+    const initialPage = context.pages().find((page) => !page.isClosed()) ?? (await context.newPage());
+    const session: SessionState = {
+      profileId: profile.id,
+      context,
+      activePage: initialPage,
+      closed: false,
+      boundPages: new WeakSet<Page>()
+    };
+    this.bindPageLifecycle(session, initialPage);
+    for (const page of context.pages()) {
+      this.bindPageLifecycle(session, page);
+    }
+    context.on("page", (page) => {
+      this.bindPageLifecycle(session, page);
+      session.activePage = page;
     });
-
-    const activePage = context.pages()[0] ?? (await context.newPage());
-    this.sessions.set(profile.id, { context, activePage });
+    context.on("close", () => {
+      this.markSessionClosed(session);
+    });
+    this.sessions.set(profile.id, session);
   }
 
   async stop(profileId: string): Promise<void> {
@@ -67,31 +77,37 @@ export class PlaywrightRuntime implements BrowserRuntime {
     if (!session) {
       return;
     }
-    await session.context.close();
-    this.sessions.delete(profileId);
+    this.markSessionClosed(session);
+    await this.closeContext(session.context);
   }
 
   async stopAll(): Promise<void> {
     await Promise.all([...this.sessions.keys()].map((profileId) => this.stop(profileId)));
+    if (this.pendingContextCloses.size > 0) {
+      await Promise.all([...this.pendingContextCloses]);
+    }
   }
 
   isRunning(profileId: string): boolean {
-    return this.sessions.has(profileId);
+    const session = this.sessions.get(profileId);
+    return Boolean(session && !session.closed);
   }
 
   listRunningIds(): string[] {
-    return [...this.sessions.keys()];
+    return [...this.sessions.entries()]
+      .filter(([, session]) => !session.closed)
+      .map(([profileId]) => profileId);
   }
 
   async execute(profile: ProfileRecord, command: BrowserCommand): Promise<CommandExecutionResult> {
     const session = this.sessions.get(profile.id);
-    if (!session) {
+    if (!session || session.closed) {
       throw new Error(`Profile ${profile.id} is not running.`);
     }
 
     switch (command.type) {
       case "listTabs": {
-        const tabs = await this.listTabs(session);
+        const tabs = await this.listTabs(profile.id, session);
         return { type: command.type, ok: true, data: { tabs } };
       }
       case "newTab": {
@@ -100,7 +116,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
           await page.goto(command.url, { waitUntil: "domcontentloaded" });
         }
         session.activePage = page;
-        const tabs = await this.listTabs(session);
+        const tabs = await this.listTabs(profile.id, session);
         const activeTabIndex = tabs.findIndex((tab) => tab.active);
         return { type: command.type, ok: true, data: { activeTabIndex, tabs } };
       }
@@ -123,11 +139,14 @@ export class PlaywrightRuntime implements BrowserRuntime {
           ? this.getActivePage(session)
           : this.getPageByIndex(session, command.tabIndex);
         await page.close();
-        session.activePage = this.getActivePage(session);
+        const tabs = await this.listTabs(profile.id, session);
+        if (tabs.length > 0) {
+          session.activePage = this.getActivePage(session);
+        }
         return {
           type: command.type,
           ok: true,
-          data: { tabs: await this.listTabs(session) }
+          data: { tabs }
         };
       }
       case "getTabText": {
@@ -235,14 +254,20 @@ export class PlaywrightRuntime implements BrowserRuntime {
     }
   }
 
-  private async listTabs(session: SessionState): Promise<Array<{ index: number; url: string; title: string; active: boolean }>> {
-    const pages = session.context.pages().filter((page) => !page.isClosed());
-    if (pages.length === 0) {
-      const page = await session.context.newPage();
-      session.activePage = page;
+  private async listTabs(
+    profileId: string,
+    session: SessionState
+  ): Promise<Array<{ index: number; url: string; title: string; active: boolean }>> {
+    const currentPages = session.context.pages().filter((page) => !page.isClosed());
+    if (currentPages.length === 0) {
+      this.markSessionClosed(session);
+      return [];
     }
 
-    const currentPages = session.context.pages().filter((page) => !page.isClosed());
+    if (session.activePage.isClosed()) {
+      session.activePage = currentPages[0] as Page;
+    }
+
     return await Promise.all(
       currentPages.map(async (page, index) => ({
         index,
@@ -260,7 +285,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
 
     const fallback = session.context.pages().find((page) => !page.isClosed());
     if (!fallback) {
-      throw new Error("No open tabs available.");
+      this.markSessionClosed(session);
+      throw new Error("No open tabs available. Browser appears closed; start the profile again.");
     }
     session.activePage = fallback;
     return fallback;
@@ -279,6 +305,45 @@ export class PlaywrightRuntime implements BrowserRuntime {
     return engine === "firefox" ? firefox : chromium;
   }
 
+  private resolveChannel(engine: ProfileRecord["engine"]): "chrome" | "msedge" | undefined {
+    if (engine === "chrome" || engine === "msedge") {
+      return engine;
+    }
+    return undefined;
+  }
+
+  private async launchContext(profile: ProfileRecord): Promise<BrowserContext> {
+    const browserType = this.resolveBrowserType(profile.engine);
+    const channel = this.resolveChannel(profile.engine);
+    const launchOptions = {
+      headless: profile.settings.headless ?? this.defaultHeadless,
+      proxy: profile.settings.proxy
+        ? {
+            server: profile.settings.proxy.server,
+            username: profile.settings.proxy.username,
+            password: profile.settings.proxy.password
+          }
+        : undefined,
+      userAgent: profile.settings.userAgent,
+      channel,
+      ignoreDefaultArgs: channel ? ["--enable-automation"] : undefined,
+      args: channel ? ["--disable-blink-features=AutomationControlled"] : undefined
+    };
+
+    try {
+      return await browserType.launchPersistentContext(profile.dataDir, launchOptions);
+    } catch (error) {
+      if (channel) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Failed to launch ${channel} browser channel for profile ${profile.id}. ` +
+            `Install and open ${channel} once, then retry. Original error: ${message}`
+        );
+      }
+      throw error;
+    }
+  }
+
   private resolveScreenshotPath(profileId: string, inputPath: string | undefined): string {
     if (!inputPath) {
       return path.join(this.artifactsDir, `${profileId}-${Date.now()}.png`);
@@ -289,5 +354,51 @@ export class PlaywrightRuntime implements BrowserRuntime {
     }
 
     return path.join(this.artifactsDir, inputPath);
+  }
+
+  private bindPageLifecycle(session: SessionState, page: Page): void {
+    if (session.boundPages.has(page)) {
+      return;
+    }
+    session.boundPages.add(page);
+    page.on("close", () => {
+      this.handlePageClosed(session, page);
+    });
+  }
+
+  private handlePageClosed(session: SessionState, closedPage: Page): void {
+    if (session.closed) {
+      return;
+    }
+    if (session.activePage === closedPage) {
+      const fallback = session.context.pages().find((page) => !page.isClosed());
+      if (fallback) {
+        session.activePage = fallback;
+      }
+    }
+
+    const openPages = session.context.pages().filter((page) => !page.isClosed());
+    if (openPages.length === 0) {
+      this.markSessionClosed(session);
+      void this.closeContext(session.context);
+    }
+  }
+
+  private markSessionClosed(session: SessionState): void {
+    if (session.closed) {
+      return;
+    }
+    session.closed = true;
+    this.sessions.delete(session.profileId);
+  }
+
+  private async closeContext(context: BrowserContext): Promise<void> {
+    const closePromise = context.close().catch(() => undefined);
+    this.pendingContextCloses.add(closePromise);
+    try {
+      await closePromise;
+    } finally {
+      this.pendingContextCloses.delete(closePromise);
+    }
   }
 }
