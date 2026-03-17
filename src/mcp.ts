@@ -5,6 +5,7 @@ import { apiRequest } from "./mcp/apiClient.js";
 import {
   CreateProfileToolInputSchema,
   EnsureGeminiProfileToolInputSchema,
+  OpenGeminiSessionToolInputSchema,
   ProfileIdToolInputSchema,
   RunActiveCommandsToolInputSchema,
   RunCommandsToolInputSchema,
@@ -146,6 +147,32 @@ server.registerTool(
         externalDataDir: parsed.externalDataDir,
         forceUpdate: parsed.forceUpdate ?? false,
         userAgent: parsed.userAgent
+      })
+    });
+    return toText(payload);
+  }
+);
+
+server.registerTool(
+  "open_gemini_session",
+  {
+    description: ToolDescriptions.openGeminiSession,
+    inputSchema: {
+      externalDataDir: z.string().min(1).optional(),
+      forceUpdate: z.boolean().optional(),
+      autoSetActive: z.boolean().optional(),
+      targetUrl: z.string().url().optional()
+    }
+  },
+  async (input) => {
+    const parsed = OpenGeminiSessionToolInputSchema.parse(input);
+    const payload = await apiRequest("/control/open-gemini", {
+      method: "POST",
+      body: JSON.stringify({
+        externalDataDir: parsed.externalDataDir,
+        forceUpdate: parsed.forceUpdate ?? false,
+        autoSetActive: parsed.autoSetActive ?? true,
+        targetUrl: parsed.targetUrl ?? "https://gemini.google.com/"
       })
     });
     return toText(payload);

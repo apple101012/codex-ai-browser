@@ -172,4 +172,18 @@ describe("HTTP API", () => {
     expect(payload.profile?.name).toBe("Gemini Persistent");
     expect(payload.profile?.managedDataDir).toBe(false);
   });
+
+  it("opens gemini and sets takeover active", async () => {
+    const open = await app.inject({
+      method: "POST",
+      path: "/control/open-gemini",
+      headers: { authorization: "Bearer test-token" },
+      payload: {}
+    });
+
+    expect(open.statusCode).toBe(200);
+    const payload = open.json<{ profile: { id: string; name: string }; activeProfileId: string }>();
+    expect(payload.profile.name).toBe("Gemini Persistent");
+    expect(payload.activeProfileId).toBe(payload.profile.id);
+  });
 });

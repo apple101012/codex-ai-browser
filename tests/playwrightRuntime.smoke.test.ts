@@ -54,6 +54,40 @@ describeBrowser("PlaywrightRuntime smoke", () => {
 
     expect(textResult.ok).toBe(true);
     expect((textResult.data as { text: string }).text).toContain("hello");
+
+    const newTab = await runtime.execute(profile, {
+      type: "newTab",
+      url: "data:text/html,<html><body>second tab</body></html>"
+    });
+    expect(newTab.ok).toBe(true);
+
+    const listTabs = await runtime.execute(profile, {
+      type: "listTabs"
+    });
+    expect(listTabs.ok).toBe(true);
+    const tabs = (listTabs.data as { tabs: Array<{ index: number }> }).tabs;
+    expect(tabs.length).toBeGreaterThanOrEqual(2);
+
+    const selectFirst = await runtime.execute(profile, {
+      type: "selectTab",
+      tabIndex: 0
+    });
+    expect(selectFirst.ok).toBe(true);
+
+    const tabText = await runtime.execute(profile, {
+      type: "getTabText",
+      tabIndex: 1,
+      maxChars: 2000
+    });
+    expect(tabText.ok).toBe(true);
+    expect((tabText.data as { text: string }).text).toContain("second tab");
+
+    await expect(
+      runtime.execute(profile, {
+        type: "getTabText",
+        tabIndex: 99
+      })
+    ).rejects.toThrowError();
     await runtime.stopAll();
   });
 });

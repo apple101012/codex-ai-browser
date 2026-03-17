@@ -26,6 +26,7 @@
         <h2>Gemini Profile</h2>
         <div class="row">
           <button id="ensureGeminiBtn">Ensure Gemini Profile</button>
+          <button id="openGeminiBtn">Open Gemini + Set Active</button>
           <span id="geminiStatus"></span>
         </div>
       </section>
@@ -60,6 +61,12 @@
         <div class="row">
           <input id="targetUrl" type="url" placeholder="https://gemini.google.com/" />
           <button id="goBtn">Navigate Active Profile</button>
+          <button id="listTabsBtn">List Tabs</button>
+        </div>
+        <div class="row">
+          <input id="tabIndexInput" type="number" min="0" placeholder="Tab index (e.g., 2)" />
+          <button id="setTabBtn">Set Active Tab</button>
+          <button id="readTabBtn">Read Tab Text</button>
         </div>
         <pre id="commandResult"></pre>
       </section>
@@ -68,4 +75,3 @@
     <script type="module" src="/app/app.js"></script>
   </body>
 </html>
-

@@ -71,6 +71,13 @@ export const EnsureGeminiProfileToolInputSchema = z.object({
   userAgent: z.string().optional()
 });
 
+export const OpenGeminiSessionToolInputSchema = z.object({
+  externalDataDir: z.string().min(1).optional(),
+  forceUpdate: z.boolean().optional(),
+  autoSetActive: z.boolean().optional(),
+  targetUrl: z.string().url().optional()
+});
+
 export const ToolDescriptions = {
   listProfiles: "List all persisted browser profiles and currently running profiles.",
   createProfile:
@@ -88,5 +95,7 @@ export const ToolDescriptions = {
     "Run commands on the currently selected active/takeover profile without providing profile id each call.",
   getControlState: "Get active takeover profile state.",
   ensureGeminiProfile:
-    "Create or reconcile a Gemini-ready persistent profile that reuses local Gemini login session data."
+    "Create or reconcile a Gemini-ready persistent profile that reuses local Gemini login session data.",
+  openGeminiSession:
+    "Open a Gemini session in the persistent Gemini profile, and optionally set it as active takeover profile."
 };

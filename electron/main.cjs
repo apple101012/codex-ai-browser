@@ -1,37 +1,38 @@
 const { app, BrowserWindow } = require("electron");
-const { spawn } = require("child_process");
 const path = require("path");
+const { pathToFileURL } = require("url");
 
 const HOST = "127.0.0.1";
-const PORT = process.env.PORT || "4321";
+const PORT = Number.parseInt(process.env.PORT || "4321", 10);
 const APP_URL = `http://${HOST}:${PORT}/app`;
 
-let backendProcess = null;
+let runningServer = null;
 
-const startBackend = () => {
-  const backendEntry = path.join(__dirname, "..", "dist", "src", "index.js");
-  backendProcess = spawn(process.execPath, [backendEntry], {
-    env: {
-      ...process.env,
-      HOST,
-      PORT,
-      DEFAULT_HEADLESS: process.env.DEFAULT_HEADLESS || "false"
-    },
-    stdio: "inherit"
-  });
+const startBackend = async () => {
+  const userDataDir = path.join(app.getPath("userData"), "data");
+  const publicDir = path.join(__dirname, "..", "public");
 
-  backendProcess.on("exit", (code) => {
-    if (code !== 0) {
-      console.error(`Backend exited with code ${code}`);
-    }
+  process.env.HOST = HOST;
+  process.env.PORT = String(PORT);
+  process.env.DATA_DIR = userDataDir;
+  process.env.PUBLIC_DIR = publicDir;
+  process.env.DEFAULT_HEADLESS = process.env.DEFAULT_HEADLESS || "false";
+
+  const modulePath = pathToFileURL(path.join(__dirname, "..", "dist", "src", "serverApp.js")).href;
+  const serverModule = await import(modulePath);
+  runningServer = await serverModule.startServer({
+    host: HOST,
+    port: PORT,
+    registerSignalHandlers: false
   });
 };
 
-const stopBackend = () => {
-  if (backendProcess && !backendProcess.killed) {
-    backendProcess.kill();
+const stopBackend = async () => {
+  if (!runningServer) {
+    return;
   }
-  backendProcess = null;
+  await runningServer.close();
+  runningServer = null;
 };
 
 const waitForServer = async (timeoutMs = 30000) => {
@@ -64,7 +65,7 @@ const createWindow = async () => {
 };
 
 app.whenReady().then(async () => {
-  startBackend();
+  await startBackend();
   await waitForServer();
   await createWindow();
 
@@ -75,14 +76,14 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("window-all-closed", () => {
-  stopBackend();
+app.on("window-all-closed", async () => {
+  await stopBackend();
   if (process.platform !== "darwin") {
     app.quit();
   }
 });
 
-app.on("quit", () => {
-  stopBackend();
+app.on("quit", async () => {
+  await stopBackend();
 });
 

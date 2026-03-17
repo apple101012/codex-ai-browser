@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CreateProfileToolInputSchema,
   EnsureGeminiProfileToolInputSchema,
+  OpenGeminiSessionToolInputSchema,
   RunActiveCommandsToolInputSchema,
   SetActiveProfileToolInputSchema,
   RunCommandsToolInputSchema,
@@ -52,5 +53,11 @@ describe("MCP tool schemas", () => {
       forceUpdate: true
     });
     expect(gemini.forceUpdate).toBe(true);
+
+    const openGemini = OpenGeminiSessionToolInputSchema.parse({
+      autoSetActive: true,
+      targetUrl: "https://gemini.google.com/"
+    });
+    expect(openGemini.autoSetActive).toBe(true);
   });
 });

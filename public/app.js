@@ -2,6 +2,7 @@ const els = {
   apiToken: document.getElementById("apiToken"),
   saveTokenBtn: document.getElementById("saveTokenBtn"),
   ensureGeminiBtn: document.getElementById("ensureGeminiBtn"),
+  openGeminiBtn: document.getElementById("openGeminiBtn"),
   geminiStatus: document.getElementById("geminiStatus"),
   activeState: document.getElementById("activeState"),
   refreshBtn: document.getElementById("refreshBtn"),
@@ -9,6 +10,10 @@ const els = {
   profilesBody: document.getElementById("profilesBody"),
   targetUrl: document.getElementById("targetUrl"),
   goBtn: document.getElementById("goBtn"),
+  listTabsBtn: document.getElementById("listTabsBtn"),
+  tabIndexInput: document.getElementById("tabIndexInput"),
+  setTabBtn: document.getElementById("setTabBtn"),
+  readTabBtn: document.getElementById("readTabBtn"),
   commandResult: document.getElementById("commandResult")
 };
 
@@ -115,6 +120,21 @@ els.ensureGeminiBtn.onclick = async () => {
   }
 };
 
+els.openGeminiBtn.onclick = async () => {
+  els.geminiStatus.textContent = "Opening Gemini session...";
+  try {
+    const payload = await request("/control/open-gemini", {
+      method: "POST",
+      body: JSON.stringify({ autoSetActive: true })
+    });
+    els.geminiStatus.textContent = `Gemini opened. Active profile: ${payload.activeProfileId}`;
+    els.commandResult.textContent = JSON.stringify(payload, null, 2);
+    await renderProfiles();
+  } catch (error) {
+    els.geminiStatus.textContent = String(error.message ?? error);
+  }
+};
+
 els.goBtn.onclick = async () => {
   const url = els.targetUrl.value.trim();
   const payload = await request("/control/active/commands", {
@@ -129,7 +149,48 @@ els.goBtn.onclick = async () => {
   els.commandResult.textContent = JSON.stringify(payload, null, 2);
 };
 
+els.listTabsBtn.onclick = async () => {
+  const payload = await request("/control/active/commands", {
+    method: "POST",
+    body: JSON.stringify({
+      commands: [{ type: "listTabs" }]
+    })
+  });
+  els.commandResult.textContent = JSON.stringify(payload, null, 2);
+};
+
+els.setTabBtn.onclick = async () => {
+  const tabIndex = Number.parseInt(els.tabIndexInput.value, 10);
+  if (Number.isNaN(tabIndex) || tabIndex < 0) {
+    els.commandResult.textContent = "Enter a valid non-negative tab index first.";
+    return;
+  }
+
+  const payload = await request("/control/active/commands", {
+    method: "POST",
+    body: JSON.stringify({
+      commands: [{ type: "selectTab", tabIndex }]
+    })
+  });
+  els.commandResult.textContent = JSON.stringify(payload, null, 2);
+};
+
+els.readTabBtn.onclick = async () => {
+  const tabIndex = Number.parseInt(els.tabIndexInput.value, 10);
+  if (Number.isNaN(tabIndex) || tabIndex < 0) {
+    els.commandResult.textContent = "Enter a valid non-negative tab index first.";
+    return;
+  }
+
+  const payload = await request("/control/active/commands", {
+    method: "POST",
+    body: JSON.stringify({
+      commands: [{ type: "getTabText", tabIndex, maxChars: 6000 }]
+    })
+  });
+  els.commandResult.textContent = JSON.stringify(payload, null, 2);
+};
+
 renderProfiles().catch((error) => {
   els.commandResult.textContent = String(error.message ?? error);
 });
-

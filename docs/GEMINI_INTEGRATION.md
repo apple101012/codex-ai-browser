@@ -26,6 +26,12 @@ API:
 POST /profiles/ensure/gemini
 ```
 
+One-shot open + set-active:
+
+```bash
+POST /control/open-gemini
+```
+
 ## Typical Flow
 
 1. Run Gemini skill setup/login once.
@@ -34,4 +40,3 @@ POST /profiles/ensure/gemini
 4. Use Gemini manually in that browser window.
 5. Set profile as active.
 6. Use `run_active_commands` via MCP (or API equivalent) for AI takeover.
-

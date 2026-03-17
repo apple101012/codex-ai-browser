@@ -6,6 +6,7 @@ AI-focused, multi-profile browser runtime with:
 - HTTP API for deterministic browser commands
 - Active profile takeover mode (you pick the live profile, AI controls that one)
 - Built-in Gemini persistent profile bootstrap
+- One-shot Gemini opener (`/control/open-gemini`) for "open + set active + navigate"
 - Browser control UI at `/app`
 - Desktop wrapper support (Electron)
 - MCP server for Codex / Claude / Gemini CLI integrations
@@ -30,6 +31,11 @@ This project is designed so an AI agent can fully control browser sessions while
   - `press`
   - `extractText`
   - `getPageState`
+  - `listTabs`
+  - `newTab`
+  - `selectTab`
+  - `closeTab`
+  - `getTabText`
   - `screenshot`
   - `evaluate` (disabled by default for safety)
 - Control/takeover API:
@@ -39,6 +45,7 @@ This project is designed so an AI agent can fully control browser sessions while
   - `POST /control/release`
 - Preset profile API:
   - `POST /profiles/ensure/gemini`
+  - `POST /control/open-gemini`
 - MCP tools:
   - `list_profiles`
   - `get_profile`
@@ -102,6 +109,21 @@ curl -X POST http://127.0.0.1:4321/profiles/ensure/gemini \
 3. AI clients call `run_active_commands` (MCP) or `POST /control/active/commands` (API).
 4. Use `Release Active Profile` when done.
 
+## Third-Tab Example
+
+Use active-profile commands:
+
+```bash
+curl -X POST http://127.0.0.1:4321/control/active/commands \
+  -H "Content-Type: application/json" \
+  -d '{
+    "commands":[
+      {"type":"listTabs"},
+      {"type":"getTabText","tabIndex":2,"maxChars":6000}
+    ]
+  }'
+```
+
 ## Minimal API Examples
 
 Create profile:
@@ -158,6 +180,8 @@ Run desktop app in dev:
 ```bash
 npm run desktop:dev
 ```
+
+The relaunch-loop bug was fixed by running the backend in-process inside Electron, instead of spawning the Electron executable as a child backend process.
 
 Build Windows package:
 

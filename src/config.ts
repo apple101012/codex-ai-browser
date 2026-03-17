@@ -34,7 +34,7 @@ export const loadConfig = (): AppConfig => {
   const dataDir = path.resolve(process.cwd(), process.env.DATA_DIR ?? "./data");
   const profilesDir = path.join(dataDir, "profiles");
   const artifactsDir = path.join(dataDir, "artifacts");
-  const publicDir = path.resolve(process.cwd(), "public");
+  const publicDir = path.resolve(process.cwd(), process.env.PUBLIC_DIR ?? "public");
 
   return {
     host,

@@ -46,6 +46,31 @@ export const EvaluateCommandSchema = z.object({
   expression: z.string().min(1)
 });
 
+export const ListTabsCommandSchema = z.object({
+  type: z.literal("listTabs")
+});
+
+export const NewTabCommandSchema = z.object({
+  type: z.literal("newTab"),
+  url: z.string().url().optional()
+});
+
+export const SelectTabCommandSchema = z.object({
+  type: z.literal("selectTab"),
+  tabIndex: z.number().int().min(0)
+});
+
+export const CloseTabCommandSchema = z.object({
+  type: z.literal("closeTab"),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+export const GetTabTextCommandSchema = z.object({
+  type: z.literal("getTabText"),
+  tabIndex: z.number().int().min(0),
+  maxChars: z.number().int().positive().max(20000).optional()
+});
+
 export const BrowserCommandSchema = z.discriminatedUnion("type", [
   NavigateCommandSchema,
   ClickCommandSchema,
@@ -54,7 +79,12 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   ExtractTextCommandSchema,
   GetPageStateCommandSchema,
   ScreenshotCommandSchema,
-  EvaluateCommandSchema
+  EvaluateCommandSchema,
+  ListTabsCommandSchema,
+  NewTabCommandSchema,
+  SelectTabCommandSchema,
+  CloseTabCommandSchema,
+  GetTabTextCommandSchema
 ]);
 
 export type BrowserCommand = z.infer<typeof BrowserCommandSchema>;
@@ -71,4 +101,3 @@ export interface CommandExecutionResult {
   data?: unknown;
   error?: string;
 }
-

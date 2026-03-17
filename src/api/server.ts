@@ -42,6 +42,13 @@ const EnsureGeminiProfileSchema = z.object({
   userAgent: z.string().min(3).max(800).optional()
 });
 
+const OpenGeminiSessionSchema = z.object({
+  externalDataDir: z.string().min(1).optional(),
+  forceUpdate: z.boolean().default(false),
+  autoSetActive: z.boolean().default(true),
+  targetUrl: z.string().url().default("https://gemini.google.com/")
+});
+
 const GEMINI_PROFILE_NAME = "Gemini Persistent";
 const DEFAULT_GEMINI_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -88,40 +95,41 @@ export const buildServer = ({ config, store, runtime, controlStore }: AppDepende
 
   app.post("/profiles/ensure/gemini", async (request, reply) => {
     const payload = EnsureGeminiProfileSchema.parse(request.body ?? {});
-    const geminiDir = path.resolve(
-      payload.externalDataDir ?? path.join(os.homedir(), ".codex", "playwright-profiles", "gemini")
-    );
+    const result = await ensureGeminiProfile(store, payload);
 
-    const existing = await store.findByName(GEMINI_PROFILE_NAME);
-    let profile = existing;
-    let created = false;
+    await reply.send({
+      created: result.created,
+      profile: result.profile,
+      geminiProfileDir: result.geminiProfileDir
+    });
+  });
 
-    if (!existing) {
-      profile = await store.create({
-        name: GEMINI_PROFILE_NAME,
-        engine: "chromium",
-        externalDataDir: geminiDir,
-        settings: {
-          headless: false,
-          userAgent: payload.userAgent ?? DEFAULT_GEMINI_USER_AGENT
-        }
-      });
-      created = true;
-    } else if (payload.forceUpdate || existing.dataDir !== geminiDir) {
-      profile = await store.update(existing.id, {
-        engine: "chromium",
-        externalDataDir: geminiDir,
-        settings: {
-          headless: false,
-          userAgent: payload.userAgent ?? existing.settings.userAgent ?? DEFAULT_GEMINI_USER_AGENT
-        }
-      });
+  app.post("/control/open-gemini", async (request, reply) => {
+    const payload = OpenGeminiSessionSchema.parse(request.body ?? {});
+    const gemini = await ensureGeminiProfile(store, payload);
+    if (!gemini.profile) {
+      await reply.code(500).send({ error: "Failed to create Gemini profile." });
+      return;
+    }
+
+    if (!runtime.isRunning(gemini.profile.id)) {
+      await runtime.start(gemini.profile);
+    }
+
+    const commandResult = await runtime.execute(gemini.profile, {
+      type: "navigate",
+      url: payload.targetUrl
+    });
+
+    if (payload.autoSetActive) {
+      controlStore.setActiveProfile(gemini.profile.id);
     }
 
     await reply.send({
-      created,
-      profile,
-      geminiProfileDir: geminiDir
+      profile: gemini.profile,
+      created: gemini.created,
+      activeProfileId: payload.autoSetActive ? gemini.profile.id : controlStore.getState().activeProfileId,
+      navigate: commandResult
     });
   });
 
@@ -322,5 +330,50 @@ const executeCommandBatch = async ({
     total: results.length,
     successCount,
     results
+  };
+};
+
+const ensureGeminiProfile = async (
+  store: ProfileStore,
+  payload: {
+    externalDataDir?: string;
+    forceUpdate?: boolean;
+    userAgent?: string;
+  }
+): Promise<{ created: boolean; profile: ProfileRecord | null; geminiProfileDir: string }> => {
+  const geminiDir = path.resolve(
+    payload.externalDataDir ?? path.join(os.homedir(), ".codex", "playwright-profiles", "gemini")
+  );
+
+  const existing = await store.findByName(GEMINI_PROFILE_NAME);
+  let profile: ProfileRecord | null = existing;
+  let created = false;
+
+  if (!existing) {
+    profile = await store.create({
+      name: GEMINI_PROFILE_NAME,
+      engine: "chromium",
+      externalDataDir: geminiDir,
+      settings: {
+        headless: false,
+        userAgent: payload.userAgent ?? DEFAULT_GEMINI_USER_AGENT
+      }
+    });
+    created = true;
+  } else if (payload.forceUpdate || existing.dataDir !== geminiDir) {
+    profile = await store.update(existing.id, {
+      engine: "chromium",
+      externalDataDir: geminiDir,
+      settings: {
+        headless: false,
+        userAgent: payload.userAgent ?? existing.settings.userAgent ?? DEFAULT_GEMINI_USER_AGENT
+      }
+    });
+  }
+
+  return {
+    created,
+    profile,
+    geminiProfileDir: geminiDir
   };
 };

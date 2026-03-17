@@ -5,9 +5,18 @@ import type { BrowserRuntime } from "./runtime.js";
 import type { BrowserCommand, CommandExecutionResult } from "../domain/commands.js";
 import type { ProfileRecord } from "../domain/profile.js";
 
+type PageCommand = Exclude<
+  BrowserCommand,
+  | { type: "listTabs" }
+  | { type: "newTab" }
+  | { type: "selectTab" }
+  | { type: "closeTab" }
+  | { type: "getTabText" }
+>;
+
 interface SessionState {
   context: BrowserContext;
-  page: Page;
+  activePage: Page;
 }
 
 export interface PlaywrightRuntimeOptions {
@@ -49,8 +58,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
       userAgent: profile.settings.userAgent
     });
 
-    const page = context.pages()[0] ?? (await context.newPage());
-    this.sessions.set(profile.id, { context, page });
+    const activePage = context.pages()[0] ?? (await context.newPage());
+    this.sessions.set(profile.id, { context, activePage });
   }
 
   async stop(profileId: string): Promise<void> {
@@ -80,8 +89,76 @@ export class PlaywrightRuntime implements BrowserRuntime {
       throw new Error(`Profile ${profile.id} is not running.`);
     }
 
-    const page = session.page;
+    switch (command.type) {
+      case "listTabs": {
+        const tabs = await this.listTabs(session);
+        return { type: command.type, ok: true, data: { tabs } };
+      }
+      case "newTab": {
+        const page = await session.context.newPage();
+        if (command.url) {
+          await page.goto(command.url, { waitUntil: "domcontentloaded" });
+        }
+        session.activePage = page;
+        const tabs = await this.listTabs(session);
+        const activeTabIndex = tabs.findIndex((tab) => tab.active);
+        return { type: command.type, ok: true, data: { activeTabIndex, tabs } };
+      }
+      case "selectTab": {
+        const page = this.getPageByIndex(session, command.tabIndex);
+        session.activePage = page;
+        await page.bringToFront();
+        return {
+          type: command.type,
+          ok: true,
+          data: {
+            tabIndex: command.tabIndex,
+            url: page.url(),
+            title: await page.title()
+          }
+        };
+      }
+      case "closeTab": {
+        const page = command.tabIndex === undefined
+          ? this.getActivePage(session)
+          : this.getPageByIndex(session, command.tabIndex);
+        await page.close();
+        session.activePage = this.getActivePage(session);
+        return {
+          type: command.type,
+          ok: true,
+          data: { tabs: await this.listTabs(session) }
+        };
+      }
+      case "getTabText": {
+        const page = this.getPageByIndex(session, command.tabIndex);
+        const text = await page.evaluate((maxChars) => {
+          const raw = document.body?.innerText ?? "";
+          return raw.slice(0, maxChars);
+        }, command.maxChars ?? 4000);
+        return {
+          type: command.type,
+          ok: true,
+          data: {
+            tabIndex: command.tabIndex,
+            url: page.url(),
+            title: await page.title(),
+            text
+          }
+        };
+      }
+      default: {
+        const page = this.getActivePage(session);
+        return await this.executePageCommand(profile, command as PageCommand, page);
+      }
+    }
+  }
 
+  private async executePageCommand(
+    profile: ProfileRecord,
+    command: PageCommand,
+    page: Page
+  ): Promise<CommandExecutionResult> {
     switch (command.type) {
       case "navigate": {
         await page.goto(command.url, { waitUntil: command.waitUntil ?? "domcontentloaded" });
@@ -156,6 +233,46 @@ export class PlaywrightRuntime implements BrowserRuntime {
         throw new Error(`Unsupported command ${(unreachable as { type?: string }).type ?? "unknown"}`);
       }
     }
+  }
+
+  private async listTabs(session: SessionState): Promise<Array<{ index: number; url: string; title: string; active: boolean }>> {
+    const pages = session.context.pages().filter((page) => !page.isClosed());
+    if (pages.length === 0) {
+      const page = await session.context.newPage();
+      session.activePage = page;
+    }
+
+    const currentPages = session.context.pages().filter((page) => !page.isClosed());
+    return await Promise.all(
+      currentPages.map(async (page, index) => ({
+        index,
+        url: page.url(),
+        title: await page.title(),
+        active: page === session.activePage
+      }))
+    );
+  }
+
+  private getActivePage(session: SessionState): Page {
+    if (!session.activePage.isClosed()) {
+      return session.activePage;
+    }
+
+    const fallback = session.context.pages().find((page) => !page.isClosed());
+    if (!fallback) {
+      throw new Error("No open tabs available.");
+    }
+    session.activePage = fallback;
+    return fallback;
+  }
+
+  private getPageByIndex(session: SessionState, index: number): Page {
+    const pages = session.context.pages().filter((page) => !page.isClosed());
+    const page = pages[index];
+    if (!page) {
+      throw new Error(`Tab index ${index} is out of range.`);
+    }
+    return page;
   }
 
   private resolveBrowserType(engine: ProfileRecord["engine"]): BrowserType {

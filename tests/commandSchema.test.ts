@@ -18,5 +18,15 @@ describe("BrowserCommandSchema", () => {
       })
     ).toThrowError();
   });
-});
 
+  it("parses tab management commands", () => {
+    const listTabs = BrowserCommandSchema.parse({ type: "listTabs" });
+    expect(listTabs.type).toBe("listTabs");
+
+    const selectTab = BrowserCommandSchema.parse({ type: "selectTab", tabIndex: 2 });
+    expect(selectTab.type).toBe("selectTab");
+
+    const getTabText = BrowserCommandSchema.parse({ type: "getTabText", tabIndex: 1, maxChars: 5000 });
+    expect(getTabText.type).toBe("getTabText");
+  });
+});
