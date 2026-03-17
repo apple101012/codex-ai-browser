@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.local
+.env.*.local
+playwright-report/
+test-results/
+data/*
+!data/.gitkeep
+tmp/
+*.log
+*.local.json
+*.tmp
+
