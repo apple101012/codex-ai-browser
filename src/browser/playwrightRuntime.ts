@@ -347,6 +347,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
     
     const launchOptions = {
       headless: profile.settings.headless ?? this.defaultHeadless,
+      chromiumSandbox: !isFirefox ? true : undefined,
       proxy: profile.settings.proxy
         ? {
             server: profile.settings.proxy.server,
