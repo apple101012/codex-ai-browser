@@ -125,9 +125,22 @@
                     <input id="profileUserAgent" type="text" placeholder="Custom user agent string" />
                   </div>
                   <div class="input-group">
+                    <label>Proxy (optional)</label>
+                    <input
+                      id="profileProxy"
+                      type="text"
+                      placeholder="host:port, user:pass@host:port, or socks5://host:port"
+                    />
+                  </div>
+                  <div class="input-group">
                     <label>Data Directory</label>
                     <input id="profileDataDir" type="text" placeholder="External profile path" />
                   </div>
+                </div>
+
+                <div class="action-row mt-3">
+                  <button id="checkProxyBtn" class="btn-secondary">Check Proxy</button>
+                  <p id="proxyStatus" class="status-text" style="margin: 0;"></p>
                 </div>
                 
                 <div class="action-row mt-4 align-center space-between">

@@ -191,7 +191,10 @@ export class PlaywrightRuntime implements BrowserRuntime {
         };
       }
       default: {
-        const page = this.getActivePage(session);
+        const page =
+          command.type === "screenshot" && command.tabIndex !== undefined
+            ? this.getPageByIndex(session, command.tabIndex)
+            : this.getActivePage(session);
         return await this.executePageCommand(profile, command as PageCommand, page);
       }
     }
@@ -263,7 +266,10 @@ export class PlaywrightRuntime implements BrowserRuntime {
         return {
           type: command.type,
           ok: true,
-          data: { path: fileName }
+          data: {
+            path: fileName,
+            tabIndex: command.tabIndex
+          }
         };
       }
       case "evaluate": {
@@ -401,7 +407,15 @@ export class PlaywrightRuntime implements BrowserRuntime {
       throw new Error("Absolute screenshot paths are not allowed.");
     }
 
-    return path.join(this.artifactsDir, inputPath);
+    const artifactsRoot = path.resolve(this.artifactsDir);
+    const resolved = path.resolve(artifactsRoot, inputPath);
+    const normalizedRoot = artifactsRoot.toLowerCase();
+    const normalizedResolved = resolved.toLowerCase();
+    if (!normalizedResolved.startsWith(`${normalizedRoot}${path.sep}`) && normalizedResolved !== normalizedRoot) {
+      throw new Error("Screenshot path must stay inside the artifacts directory.");
+    }
+
+    return resolved;
   }
 
   private bindPageLifecycle(session: SessionState, page: Page): void {

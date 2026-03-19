@@ -37,6 +37,7 @@ export const GetPageStateCommandSchema = z.object({
 
 export const ScreenshotCommandSchema = z.object({
   type: z.literal("screenshot"),
+  tabIndex: z.number().int().min(0).optional(),
   path: z.string().min(1).optional(),
   fullPage: z.boolean().optional()
 });

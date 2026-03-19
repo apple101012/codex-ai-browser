@@ -10,6 +10,7 @@ import {
   type UpdateProfileInput,
   type SavedTab
 } from "../domain/profile.js";
+import { coerceProxyConfig } from "../proxy/proxyParser.js";
 
 const INDEX_FILE_NAME = "profiles-index.json";
 
@@ -55,6 +56,7 @@ export class ProfileStore {
     const externalDataDir = payload.externalDataDir?.trim();
     const dataDir = externalDataDir ? path.resolve(externalDataDir) : path.join(this.profileDataDir, id);
     const managedDataDir = !externalDataDir;
+    const proxy = coerceProxyConfig(payload.settings.proxy, { emptyStringAsUndefined: true });
 
     await mkdir(dataDir, { recursive: true });
 
@@ -62,7 +64,10 @@ export class ProfileStore {
       id,
       name: payload.name,
       engine: payload.engine,
-      settings: payload.settings,
+      settings: {
+        ...payload.settings,
+        ...(proxy ? { proxy } : {})
+      },
       createdAt: now,
       updatedAt: now,
       dataDir,
@@ -87,15 +92,23 @@ export class ProfileStore {
     if (!current) {
       return null;
     }
+    const proxy = payload.settings && "proxy" in payload.settings
+      ? coerceProxyConfig(payload.settings.proxy, { emptyStringAsUndefined: true })
+      : current.settings.proxy;
+    const nextSettings = {
+      ...current.settings,
+      ...(payload.settings ?? {})
+    };
+    if (proxy === undefined) {
+      delete nextSettings.proxy;
+    } else {
+      nextSettings.proxy = proxy;
+    }
     const nextRecord: ProfileRecord = ProfileRecordSchema.parse({
       ...current,
       name: payload.name ?? current.name,
       engine: payload.engine ?? current.engine,
-      settings: {
-        ...current.settings,
-        ...(payload.settings ?? {}),
-        proxy: payload.settings?.proxy === undefined ? current.settings.proxy : payload.settings.proxy
-      },
+      settings: nextSettings,
       dataDir: payload.externalDataDir ? path.resolve(payload.externalDataDir.trim()) : current.dataDir,
       managedDataDir: payload.externalDataDir ? false : current.managedDataDir,
       updatedAt: new Date().toISOString()

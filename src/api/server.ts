@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import staticPlugin from "@fastify/static";
 import os from "node:os";
 import path from "node:path";
+import { unlink } from "node:fs/promises";
 import { z, ZodError } from "zod";
 import type { FastifyReply } from "fastify";
 import { authHook } from "./auth.js";
@@ -17,6 +18,10 @@ import type { BrowserRuntime } from "../browser/runtime.js";
 import type { AppConfig } from "../config.js";
 import type { ActiveControlStore } from "../control/activeControlStore.js";
 import { ProfileBackupStore } from "../storage/profileBackupStore.js";
+import { createPlaywrightProxyChecker, type ProxyCheckResult } from "../proxy/proxyChecker.js";
+import { parseProxyString } from "../proxy/proxyParser.js";
+import { ProxyCheckRequestSchema, ProxyParseRequestSchema } from "../proxy/proxySchemas.js";
+import type { ProxyConfigInput } from "../proxy/proxyTypes.js";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -24,7 +29,13 @@ export interface AppDependencies {
   runtime: BrowserRuntime;
   controlStore: ActiveControlStore;
   backupStore?: ProfileBackupStore;
+  proxyChecker?: ProxyCheckerFn;
 }
+
+type ProxyCheckerFn = (
+  proxyInput: ProxyConfigInput,
+  options?: { testUrl?: string; timeoutMs?: number }
+) => Promise<ProxyCheckResult>;
 
 const parseProfileId = (value: unknown): string => {
   if (typeof value !== "string" || !value.trim()) {
@@ -36,6 +47,15 @@ const parseProfileId = (value: unknown): string => {
 const SetActiveProfileSchema = z.object({
   profileId: z.string().uuid(),
   autoStart: z.boolean().default(true)
+});
+
+const EnsureActiveProfileSchema = z.object({
+  profileId: z.string().uuid().optional(),
+  profileName: z.string().min(1).max(200).optional(),
+  autoStart: z.boolean().default(true),
+  setActive: z.boolean().default(true),
+  preferRunningBrowserProfile: z.boolean().default(true),
+  allowAnyRunningFallback: z.boolean().default(false)
 });
 
 const StartProfileSchema = z.object({
@@ -68,6 +88,18 @@ const OpenUrlSchema = z.object({
   autoStart: z.boolean().default(true)
 });
 
+const CaptureActiveScreenshotSchema = z.object({
+  tabIndex: z.number().int().min(0).optional(),
+  fullPage: z.boolean().default(false),
+  path: z.string().min(1).max(500).optional(),
+  autoStart: z.boolean().default(true),
+  autoDeleteAfterMs: z.number().int().min(0).max(86_400_000).default(0)
+});
+
+const DeleteArtifactSchema = z.object({
+  path: z.string().min(1).max(500)
+});
+
 const CreateBackupSchema = z.object({
   destinationDir: z.string().min(1).optional(),
   label: z.string().min(1).max(200).optional()
@@ -91,8 +123,16 @@ const RestoreBackupSchema = z.object({
 const DEFAULT_BROWSER_PROFILE_NAME = "Browser Profile";
 const LEGACY_GEMINI_PROFILE_NAME = "Gemini Persistent";
 
-export const buildServer = ({ config, store, runtime, controlStore, backupStore: providedBackupStore }: AppDependencies) => {
+export const buildServer = ({
+  config,
+  store,
+  runtime,
+  controlStore,
+  backupStore: providedBackupStore,
+  proxyChecker: providedProxyChecker
+}: AppDependencies) => {
   const backupStore = providedBackupStore ?? new ProfileBackupStore(config.backupDir ?? path.join(config.dataDir, "backups"));
+  const proxyChecker = providedProxyChecker ?? createPlaywrightProxyChecker({ headless: true });
   const app = Fastify({
     logger: true
   });
@@ -122,11 +162,29 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
     timestamp: new Date().toISOString()
   }));
 
+  app.post("/proxy/parse", async (request, reply) => {
+    const payload = ProxyParseRequestSchema.parse(request.body ?? {});
+    const proxy = parseProxyString(payload.proxyInput);
+    await reply.send({
+      proxy: redactProxyForResponse(proxy),
+      parsed: true
+    });
+  });
+
+  app.post("/proxy/check", async (request, reply) => {
+    const payload = ProxyCheckRequestSchema.parse(request.body ?? {});
+    const result = await proxyChecker(payload.proxyInput, {
+      testUrl: payload.testUrl,
+      timeoutMs: payload.timeoutMs
+    });
+    await reply.send(redactProxyCheckResult(result));
+  });
+
   app.get("/profiles", async () => {
     const controlState = await getReconciledControlState({ controlStore, runtime, store });
     const profiles = await store.list();
     return {
-      profiles,
+      profiles: profiles.map((profile) => redactProfileForResponse(profile)),
       runningProfileIds: controlState.runningProfileIds,
       activeProfileId: controlState.activeProfileId,
       controlUpdatedAt: controlState.updatedAt
@@ -136,7 +194,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
   app.post("/profiles", async (request, reply) => {
     const payload = CreateProfileInputSchema.parse(request.body);
     const profile = await store.create(payload);
-    await reply.code(201).send({ profile });
+    await reply.code(201).send({ profile: redactProfileForResponse(profile) });
   });
 
   app.get("/backups", async (request, reply) => {
@@ -237,7 +295,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
 
     await reply.send({
       created: result.created,
-      profile: result.profile,
+      profile: redactProfileForResponse(result.profile),
       geminiProfileDir: result.geminiProfileDir
     });
   });
@@ -248,7 +306,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
 
     await reply.send({
       created: result.created,
-      profile: result.profile,
+      profile: redactProfileForResponse(result.profile),
       browserProfileDir: result.geminiProfileDir
     });
   });
@@ -284,7 +342,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
     }
 
     await reply.send({
-      profile,
+      profile: redactProfileForResponse(profile),
       activeProfileId: payload.autoSetActive ? profile.id : controlStore.getState().activeProfileId,
       navigate: commandResult
     });
@@ -312,7 +370,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
     }
 
     await reply.send({
-      profile: gemini.profile,
+      profile: redactProfileForResponse(gemini.profile),
       created: gemini.created,
       activeProfileId: payload.autoSetActive ? gemini.profile.id : controlStore.getState().activeProfileId,
       navigate: commandResult
@@ -328,7 +386,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
     }
 
     await reply.send({
-      profile,
+      profile: redactProfileForResponse(profile),
       running: runtime.isRunning(id)
     });
   });
@@ -347,7 +405,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
       await runtime.start(updated);
     }
 
-    await reply.send({ profile: updated });
+    await reply.send({ profile: redactProfileForResponse(updated) });
   });
 
   app.delete("/profiles/:id", async (request, reply) => {
@@ -429,7 +487,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
     }
 
     await reply.send({
-      profile: updated,
+      profile: redactProfileForResponse(updated),
       visible: updated.settings.headless === false,
       restarted,
       started,
@@ -465,6 +523,69 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
 
   app.get("/control/state", async () => {
     return await getReconciledControlState({ controlStore, runtime, store });
+  });
+
+  app.post("/control/ensure-active", async (request, reply) => {
+    const payload = EnsureActiveProfileSchema.parse(request.body ?? {});
+    const state = await getReconciledControlState({ controlStore, runtime, store });
+    const runningIds = new Set(state.runningProfileIds);
+    const profiles = await store.list();
+
+    let profile: ProfileRecord | null = null;
+    let resolution: "explicit-profile-id" | "explicit-profile-name" | "existing-active" | "running-browser-profile" | "any-running" | "none" = "none";
+
+    if (payload.profileId) {
+      profile = await store.get(payload.profileId);
+      resolution = "explicit-profile-id";
+    } else if (payload.profileName) {
+      profile = await store.findByName(payload.profileName);
+      resolution = "explicit-profile-name";
+    } else if (state.activeProfileId) {
+      profile = await store.get(state.activeProfileId);
+      resolution = "existing-active";
+    }
+
+    if (!profile && payload.preferRunningBrowserProfile) {
+      profile =
+        profiles.find((candidate) => candidate.name.toLowerCase() === DEFAULT_BROWSER_PROFILE_NAME.toLowerCase() && runningIds.has(candidate.id)) ??
+        null;
+      if (profile) {
+        resolution = "running-browser-profile";
+      }
+    }
+
+    if (!profile && payload.allowAnyRunningFallback) {
+      const runningProfiles = profiles
+        .filter((candidate) => runningIds.has(candidate.id))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      profile = runningProfiles[0] ?? null;
+      if (profile) {
+        resolution = "any-running";
+      }
+    }
+
+    if (!profile) {
+      await reply.code(404).send({
+        error:
+          "No profile could be resolved. Provide profileId/profileName, or set allowAnyRunningFallback=true."
+      });
+      return;
+    }
+
+    const wasRunning = runtime.isRunning(profile.id);
+    if (payload.autoStart && !wasRunning) {
+      await runtime.start(profile);
+    }
+
+    const currentState = payload.setActive ? controlStore.setActiveProfile(profile.id) : controlStore.getState();
+    await reply.send({
+      profile: redactProfileForResponse(profile),
+      resolvedFrom: resolution,
+      started: payload.autoStart && !wasRunning,
+      running: runtime.isRunning(profile.id),
+      activeProfileId: currentState.activeProfileId,
+      updatedAt: currentState.updatedAt
+    });
   });
 
   app.post("/control/active-profile", async (request, reply) => {
@@ -514,6 +635,65 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
       profileId: profile.id,
       activeProfileId: profile.id,
       ...result
+    });
+  });
+
+  app.post("/control/active/screenshot", async (request, reply) => {
+    const state = await getReconciledControlState({ controlStore, runtime, store });
+    if (!state.activeProfileId) {
+      await reply.code(400).send({ error: "No active profile selected." });
+      return;
+    }
+
+    const profile = await store.get(state.activeProfileId);
+    if (!profile) {
+      controlStore.clearActiveProfile();
+      await reply.code(404).send({ error: "Active profile no longer exists." });
+      return;
+    }
+
+    const payload = CaptureActiveScreenshotSchema.parse(request.body ?? {});
+    if (payload.autoStart && !runtime.isRunning(profile.id)) {
+      await runtime.start(profile);
+    }
+
+    const result = await runtime.execute(profile, {
+      type: "screenshot",
+      tabIndex: payload.tabIndex,
+      fullPage: payload.fullPage,
+      path: payload.path
+    });
+
+    const artifactPath = getResultScreenshotPath(result);
+    const hasArtifactPath = typeof artifactPath === "string" && artifactPath.length > 0;
+    const deleteScheduled = Boolean(hasArtifactPath && payload.autoDeleteAfterMs > 0);
+    const deleteAt =
+      deleteScheduled && payload.autoDeleteAfterMs > 0
+        ? new Date(Date.now() + payload.autoDeleteAfterMs).toISOString()
+        : null;
+
+    if (deleteScheduled && artifactPath) {
+      scheduleArtifactDeletion(artifactPath, payload.autoDeleteAfterMs);
+    }
+
+    await reply.send({
+      profileId: profile.id,
+      activeProfileId: profile.id,
+      screenshot: result,
+      artifactPath: artifactPath ?? null,
+      deleteScheduled,
+      autoDeleteAfterMs: payload.autoDeleteAfterMs,
+      deleteAt
+    });
+  });
+
+  app.post("/artifacts/delete", async (request, reply) => {
+    const payload = DeleteArtifactSchema.parse(request.body ?? {});
+    const resolvedPath = resolveArtifactPath(config.artifactsDir, payload.path);
+    const deleted = await deleteArtifactFile(resolvedPath);
+    await reply.send({
+      deleted,
+      path: resolvedPath
     });
   });
 
@@ -628,6 +808,138 @@ const executeCommandBatch = async ({
     successCount,
     results
   };
+};
+
+const getResultScreenshotPath = (result: { data?: unknown }): string | null => {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const candidate = (result.data as { path?: unknown } | undefined)?.path;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+};
+
+const redactProxyForResponse = (
+  proxy: { server: string; username?: string; password?: string } | null | undefined
+): { server: string; hasAuth: boolean } | undefined => {
+  if (!proxy) {
+    return undefined;
+  }
+  const redactedServer = stripProxyCredentials(proxy.server);
+  return {
+    server: redactedServer,
+    hasAuth: Boolean(proxy.username || proxy.password || redactedServer !== proxy.server)
+  };
+};
+
+const redactSensitiveText = (value: string): string => {
+  return value
+    .replace(
+      /([a-z][a-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi,
+      "$1[redacted-user]:[redacted-pass]@"
+    )
+    .replace(/\b([a-z0-9.-]+:\d+):([^:\s]+):([^:\s]+)\b/gi, "$1:[redacted-user]:[redacted-pass]")
+    .replace(/(password|passwd|pwd)=([^&\s]+)/gi, "$1=[redacted]")
+    .replace(/(username|user)=([^&\s]+)/gi, "$1=[redacted]");
+};
+
+const redactProxyCheckResult = (result: ProxyCheckResult): Omit<ProxyCheckResult, "proxy"> & {
+  proxy: { server: string; hasAuth: boolean } | undefined;
+} => {
+  const redactAttemptField = (value: string | undefined): string | undefined =>
+    typeof value === "string" ? redactSensitiveText(value) : undefined;
+
+  return {
+    ...result,
+    proxy: redactProxyForResponse(result.proxy),
+    error: redactAttemptField(result.error),
+    bodySnippet: redactAttemptField(result.bodySnippet),
+    attempts: result.attempts.map((attempt) => ({
+      ...attempt,
+      error: redactAttemptField(attempt.error),
+      bodySnippet: redactAttemptField(attempt.bodySnippet)
+    }))
+  };
+};
+
+const redactProfileForResponse = (
+  profile: ProfileRecord | null
+):
+  | (Omit<ProfileRecord, "settings"> & {
+      settings: Omit<ProfileRecord["settings"], "proxy"> & { proxy?: { server: string; hasAuth: boolean } };
+    })
+  | null => {
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    ...profile,
+    settings: {
+      ...profile.settings,
+      proxy: redactProxyForResponse(profile.settings.proxy)
+    }
+  };
+};
+
+const stripProxyCredentials = (server: string): string => {
+  const trimmed = server.trim();
+  if (!trimmed) {
+    return server;
+  }
+
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+  const candidate = hasScheme ? trimmed : `http://${trimmed}`;
+
+  try {
+    const parsed = new URL(candidate);
+    if (!parsed.username && !parsed.password) {
+      return trimmed;
+    }
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return trimmed.replace(/^([^@/]+):([^@/]+)@/, "");
+  }
+};
+
+const resolveArtifactPath = (artifactsDir: string, requestedPath: string): string => {
+  const trimmed = requestedPath.trim();
+  if (!trimmed) {
+    throw new Error("Artifact path is required.");
+  }
+
+  const artifactsRoot = path.resolve(artifactsDir);
+  const resolved = path.resolve(path.isAbsolute(trimmed) ? trimmed : path.join(artifactsRoot, trimmed));
+  const normalizedRoot = artifactsRoot.toLowerCase();
+  const normalizedResolved = resolved.toLowerCase();
+  const inRoot =
+    normalizedResolved === normalizedRoot || normalizedResolved.startsWith(`${normalizedRoot}${path.sep}`);
+
+  if (!inRoot) {
+    throw new Error("Artifact path must stay inside artifacts directory.");
+  }
+
+  return resolved;
+};
+
+const deleteArtifactFile = async (resolvedPath: string): Promise<boolean> => {
+  try {
+    await unlink(resolvedPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const scheduleArtifactDeletion = (resolvedPath: string, autoDeleteAfterMs: number): void => {
+  if (autoDeleteAfterMs <= 0) {
+    return;
+  }
+  setTimeout(() => {
+    void deleteArtifactFile(resolvedPath);
+  }, autoDeleteAfterMs).unref();
 };
 
 const ensureGeminiProfile = async (

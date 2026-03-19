@@ -3,8 +3,10 @@ dist/
 coverage/
 release/
 .env
+.env.*
 .env.local
 .env.*.local
+!.env.example
 playwright-report/
 test-results/
 data/
@@ -14,6 +16,8 @@ tmp/
 *.local.json
 *.tmp
 *.exe
+tmp-*.mjs
+fresh2-*.mjs
 artifacts/
 profiles/
 playwright-profiles/
@@ -21,8 +25,14 @@ playwright-profiles/
 *.sqlite-shm
 *.sqlite-wal
 *.ldb
+*.har
+cookies*.json
+storageState*.json
+.auth/
 response.html
 profiles-backup-*
+backups/
+backup-*/
 
 # Project Exclusions (Test files, READMEs, etc.)
 tests/

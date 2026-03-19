@@ -52,6 +52,15 @@ export const SetActiveProfileToolInputSchema = z.object({
   autoStart: z.boolean().optional()
 });
 
+export const EnsureActiveProfileToolInputSchema = z.object({
+  profileId: z.string().uuid().optional(),
+  profileName: z.string().min(1).max(200).optional(),
+  autoStart: z.boolean().optional(),
+  setActive: z.boolean().optional(),
+  preferRunningBrowserProfile: z.boolean().optional(),
+  allowAnyRunningFallback: z.boolean().optional()
+});
+
 export const RunActiveCommandsToolInputSchema = z.object({
   autoStart: z.boolean().optional(),
   commands: z
@@ -72,6 +81,7 @@ export const EnsureGeminiProfileToolInputSchema = z.object({
   forceUpdate: z.boolean().optional(),
   userAgent: z.string().optional()
 });
+export const EnsureBrowserProfileToolInputSchema = EnsureGeminiProfileToolInputSchema;
 
 export const OpenGeminiSessionToolInputSchema = z.object({
   externalDataDir: z.string().min(1).optional(),
@@ -85,6 +95,18 @@ export const OpenUrlSessionToolInputSchema = z.object({
   profileId: z.string().uuid().optional(),
   autoSetActive: z.boolean().optional(),
   autoStart: z.boolean().optional()
+});
+
+export const CaptureActiveScreenshotToolInputSchema = z.object({
+  tabIndex: z.number().int().min(0).optional(),
+  fullPage: z.boolean().optional(),
+  path: z.string().min(1).max(500).optional(),
+  autoStart: z.boolean().optional(),
+  autoDeleteAfterMs: z.number().int().min(0).max(86_400_000).optional()
+});
+
+export const DeleteArtifactToolInputSchema = z.object({
+  path: z.string().min(1).max(500)
 });
 
 export const ListBackupsToolInputSchema = z.object({
@@ -118,6 +140,8 @@ export const ToolDescriptions = {
   getProfile: "Get profile details and running state.",
   setActiveProfile:
     "Mark a profile as the active takeover target so future active commands can control it directly.",
+  ensureActiveProfile:
+    "Resolve active profile in order: explicit id/name -> existing active -> running Browser Profile -> optional any-running fallback (allowAnyRunningFallback).",
   releaseActiveProfile:
     "Release the active takeover profile so agents stop controlling a selected browser profile.",
   runActiveCommands:
@@ -125,10 +149,16 @@ export const ToolDescriptions = {
   getControlState: "Get active takeover profile state.",
   ensureGeminiProfile:
     "Create or reconcile a Gemini-ready persistent profile that reuses local Gemini login session data.",
+  ensureBrowserProfile:
+    "Create or reconcile the default persistent Browser Profile used for first-run local AI control.",
   openGeminiSession:
     "Open a Gemini session in the persistent Gemini profile, and optionally set it as active takeover profile.",
   openUrlSession:
     "Open any URL in a resolved profile (specific profile id or current active profile) and optionally set active control.",
+  captureActiveScreenshot:
+    "Capture a screenshot from the current active profile in one call (optionally by tab index), with optional timed auto-delete.",
+  deleteArtifact:
+    "Delete an artifact file under the local artifacts directory. Use this after screenshot analysis to keep storage clean.",
   deleteProfile: "Delete a persisted profile (stopping it first if currently running).",
   listBackups: "List profile backups (optionally filtered by profile id).",
   backupProfile:

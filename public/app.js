@@ -8,10 +8,13 @@ const els = {
   profileName: document.getElementById("profileName"),
   profileEngine: document.getElementById("profileEngine"),
   profileUserAgent: document.getElementById("profileUserAgent"),
+  profileProxy: document.getElementById("profileProxy"),
   profileDataDir: document.getElementById("profileDataDir"),
   profileHeadless: document.getElementById("profileHeadless"),
+  checkProxyBtn: document.getElementById("checkProxyBtn"),
   createProfileBtn: document.getElementById("createProfileBtn"),
   profileActionStatus: document.getElementById("profileActionStatus"),
+  proxyStatus: document.getElementById("proxyStatus"),
   activeState: document.getElementById("activeState"),
   refreshBtn: document.getElementById("refreshBtn"),
   stopAllBtn: document.getElementById("stopAllBtn"),
@@ -31,6 +34,7 @@ els.apiToken.value = localStorage.getItem(tokenKey) ?? "";
 els.targetUrl.value = "https://gemini.google.com/";
 els.profileName.value = `Browser ID ${Math.floor(Math.random() * 900) + 100}`;
 els.profileHeadless.checked = false;
+els.profileProxy.value = "";
 
 const headers = () => {
   const token = localStorage.getItem(tokenKey)?.trim();
@@ -74,13 +78,66 @@ const request = async (path, init = {}) => {
   return payload;
 };
 
+const sanitizeForDisplay = (value) => {
+  const sensitiveKeys = new Set([
+    "password",
+    "proxyinput",
+    "authorization",
+    "token",
+    "apitoken",
+    "cookie"
+  ]);
+  const redactSensitiveText = (input) =>
+    input
+      .replace(
+        /([a-z][a-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi,
+        "$1[redacted-user]:[redacted-pass]@"
+      )
+      .replace(/\b([a-z0-9.-]+:\d+):([^:\s]+):([^:\s]+)\b/gi, "$1:[redacted-user]:[redacted-pass]")
+      .replace(/(password|passwd|pwd)=([^&\s]+)/gi, "$1=[redacted]")
+      .replace(/(username|user)=([^&\s]+)/gi, "$1=[redacted]");
+
+  const visit = (node) => {
+    if (Array.isArray(node)) {
+      return node.map(visit);
+    }
+    if (typeof node === "string") {
+      return redactSensitiveText(node);
+    }
+    if (!node || typeof node !== "object") {
+      return node;
+    }
+
+    const entries = Object.entries(node);
+    const next = {};
+    for (const [key, child] of entries) {
+      const normalized = key.toLowerCase();
+      if (normalized === "proxy" && child && typeof child === "object") {
+        next[key] = {
+          server: child.server,
+          hasAuth: Boolean(child.username || child.password || child.hasAuth)
+        };
+        continue;
+      }
+      if (sensitiveKeys.has(normalized)) {
+        next[key] = "[redacted]";
+        continue;
+      }
+      next[key] = visit(child);
+    }
+    return next;
+  };
+
+  return visit(value);
+};
+
 const runAction = async (label, action, statusEl = els.profileActionStatus) => {
   setStatus(statusEl, `${label}...`, "warn");
   try {
     const payload = await action();
     setStatus(statusEl, `${label} complete.`, "ok");
     if (payload !== undefined) {
-      els.commandResult.textContent = JSON.stringify(payload, null, 2);
+      els.commandResult.textContent = JSON.stringify(sanitizeForDisplay(payload), null, 2);
     }
     return payload;
   } catch (error) {
@@ -106,6 +163,112 @@ const stringToColor = (str) => {
   }
   const hue = Math.abs(hash) % 360;
   return `hsl(${hue}, 70%, 60%)`;
+};
+
+const normalizeProxyServer = (value, defaultScheme = "http:") => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Proxy server is required.");
+  }
+
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `${defaultScheme}//${trimmed}`;
+  const parsed = new URL(withScheme);
+  if (!parsed.hostname || !parsed.port) {
+    throw new Error("Proxy must include a host and port.");
+  }
+
+  return parsed;
+};
+
+const parseProxyInput = (input) => {
+  const raw = input.trim();
+  if (!raw) {
+    return null;
+  }
+
+  const cleaned = raw.replace(/^proxy\s*=\s*/i, "").trim();
+  if (!cleaned) {
+    return null;
+  }
+
+  const parseFromUrl = (value) => {
+    const parsed = normalizeProxyServer(value);
+    const proxy = {
+      server: `${parsed.protocol}//${parsed.host}`,
+      ...(parsed.username ? { username: decodeURIComponent(parsed.username) } : {}),
+      ...(parsed.password ? { password: decodeURIComponent(parsed.password) } : {})
+    };
+    return proxy;
+  };
+
+  if (cleaned.includes("://")) {
+    return parseFromUrl(cleaned);
+  }
+
+  if (cleaned.includes("@")) {
+    return parseFromUrl(`http://${cleaned}`);
+  }
+
+  const pipeParts = cleaned.split("|").map((part) => part.trim()).filter(Boolean);
+  const commaParts = cleaned.split(",").map((part) => part.trim()).filter(Boolean);
+
+  const authParts = pipeParts.length > 1 ? pipeParts : commaParts.length > 1 ? commaParts : null;
+  if (authParts) {
+    if (authParts.length === 3) {
+      const [server, username, password] = authParts;
+      const parsed = parseFromUrl(server);
+      return {
+        ...parsed,
+        username,
+        password
+      };
+    }
+
+    if (authParts.length === 4) {
+      const [host, port, username, password] = authParts;
+      return {
+        server: `http://${host}:${port}`,
+        username,
+        password
+      };
+    }
+  }
+
+  const colonParts = cleaned.split(":").map((part) => part.trim()).filter(Boolean);
+  if (colonParts.length === 2) {
+    const [host, port] = colonParts;
+    return {
+      server: `http://${host}:${port}`
+    };
+  }
+
+  if (colonParts.length === 4) {
+    const [host, port, username, password] = colonParts;
+    return {
+      server: `http://${host}:${port}`,
+      username,
+      password
+    };
+  }
+
+  throw new Error(
+    "Unsupported proxy format. Use host:port, host:port:username:password, user:pass@host:port, or scheme://host:port."
+  );
+};
+
+const summarizeProxy = (proxy) => {
+  if (!proxy?.server) {
+    return "No proxy";
+  }
+
+  try {
+    const parsed = normalizeProxyServer(proxy.server, "http:");
+    const hasAuth = Boolean(proxy.username || proxy.password);
+    const authText = hasAuth ? ` • auth` : "";
+    return `${parsed.protocol}//${parsed.host}${authText}`;
+  } catch {
+    return proxy.server;
+  }
 };
 
 // Auto-refresh state
@@ -151,6 +314,7 @@ const refreshProfiles = async () => {
     const isRunning = running.has(profile.id);
     const isVisible = profile.settings?.headless === false;
     const isActive = profile.id === activeProfileId;
+    const proxySummary = summarizeProxy(profile.settings?.proxy);
     const color = stringToColor(profile.id);
     
     const tr = document.createElement("tr");
@@ -168,6 +332,7 @@ const refreshProfiles = async () => {
       <td>
         <div style="font-weight: 500;">${profile.engine}</div>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${isVisible ? "Visible UI" : "Hidden UI"}</div>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">Proxy: ${proxySummary}</div>
       </td>
       <td>
         <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start;">
@@ -299,7 +464,76 @@ const refreshProfiles = async () => {
     grp3.className = "btn-group";
     grp3.append(showBtn, hideBtn);
 
-    // Group 4: Delete
+    // Group 4: Proxy
+    const proxyBtn = document.createElement("button");
+    proxyBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h16"></path></svg> Proxy`;
+    proxyBtn.className = "btn-secondary btn-sm";
+    proxyBtn.onclick = async () => {
+      const currentProxy = profile.settings?.proxy?.server ?? "";
+      const proxyInput = window.prompt(
+        "Paste a proxy string. Supported formats: host:port, host:port:user:pass, user:pass@host:port, socks5://host:port",
+        currentProxy
+      );
+      if (proxyInput === null) {
+        return;
+      }
+
+      const trimmed = proxyInput.trim();
+      if (!trimmed) {
+        setStatus(els.profileActionStatus, "Proxy unchanged. Use Clear Proxy to remove it.", "warn");
+        return;
+      }
+
+      let proxy;
+      try {
+        proxy = parseProxyInput(trimmed);
+      } catch (error) {
+        setStatus(els.profileActionStatus, String(error.message ?? error), "err");
+        return;
+      }
+
+      await runAction(
+        `Update proxy for ${profile.name}`,
+        () =>
+          request(`/profiles/${profile.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              settings: {
+                proxy
+              }
+            })
+          }),
+        els.profileActionStatus
+      );
+      await refreshProfiles();
+    };
+
+    const clearProxyBtn = document.createElement("button");
+    clearProxyBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"></path></svg> Clear Proxy`;
+    clearProxyBtn.className = "btn-warning btn-sm";
+    clearProxyBtn.disabled = !profile.settings?.proxy;
+    clearProxyBtn.onclick = async () => {
+      await runAction(
+        `Clear proxy for ${profile.name}`,
+        () =>
+          request(`/profiles/${profile.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              settings: {
+                proxy: null
+              }
+            })
+          }),
+        els.profileActionStatus
+      );
+      await refreshProfiles();
+    };
+
+    const grp4 = document.createElement("div");
+    grp4.className = "btn-group";
+    grp4.append(proxyBtn, clearProxyBtn);
+
+    // Group 5: Delete
     const deleteBtn = document.createElement("button");
     deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Delete`;
     deleteBtn.title = "Delete";
@@ -319,7 +553,7 @@ const refreshProfiles = async () => {
       await refreshProfiles();
     };
 
-    actionsContainer.append(grp1, grp2, grp3, deleteBtn);
+    actionsContainer.append(grp1, grp2, grp3, grp4, deleteBtn);
     els.profilesBody.append(tr);
   }
   } finally {
@@ -414,12 +648,23 @@ els.createProfileBtn.onclick = async () => {
   const name = els.profileName.value.trim();
   const engine = els.profileEngine.value;
   const userAgent = els.profileUserAgent.value.trim();
+  const proxyInput = els.profileProxy.value.trim();
   const externalDataDir = els.profileDataDir.value.trim();
   const headless = els.profileHeadless.checked;
 
   if (!name) {
     setStatus(els.profileActionStatus, "Profile name is required.", "err");
     return;
+  }
+
+  let proxy;
+  if (proxyInput) {
+    try {
+      proxy = parseProxyInput(proxyInput);
+    } catch (error) {
+      setStatus(els.proxyStatus, String(error.message ?? error), "err");
+      return;
+    }
   }
 
   await runAction(
@@ -432,6 +677,7 @@ els.createProfileBtn.onclick = async () => {
           engine,
           settings: {
             ...(userAgent ? { userAgent } : {}),
+            ...(proxy ? { proxy } : {}),
             headless
           },
           externalDataDir: externalDataDir || undefined
@@ -441,9 +687,44 @@ els.createProfileBtn.onclick = async () => {
   );
   els.profileName.value = `Browser ID ${Math.floor(Math.random() * 900) + 100}`;
   els.profileUserAgent.value = "";
+  els.profileProxy.value = "";
   els.profileDataDir.value = "";
   els.profileHeadless.checked = false;
   await refreshProfiles();
+};
+
+els.checkProxyBtn.onclick = async () => {
+  const proxyInput = els.profileProxy.value.trim();
+  if (!proxyInput) {
+    setStatus(els.proxyStatus, "Paste a proxy string first.", "warn");
+    return;
+  }
+
+  try {
+    parseProxyInput(proxyInput);
+  } catch (error) {
+    setStatus(els.proxyStatus, String(error.message ?? error), "err");
+    return;
+  }
+
+  const payload = await runAction(
+    "Check proxy",
+    () =>
+      request("/proxy/check", {
+        method: "POST",
+        body: JSON.stringify({
+          proxyInput,
+          testUrl: "https://api.ipify.org/?format=json",
+          timeoutMs: 15_000
+        })
+      }),
+    els.proxyStatus
+  );
+
+  if (payload?.reachable) {
+    const publicIp = payload.publicIp ? ` Checker IP: ${payload.publicIp}` : "";
+    setStatus(els.proxyStatus, `Proxy looks reachable.${publicIp}`, "ok");
+  }
 };
 
 els.refreshBtn.onclick = async () => {
