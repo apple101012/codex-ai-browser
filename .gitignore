@@ -45,3 +45,4 @@ VALIDATE_*.js
 *.txt
 *.ics
 !LICENSE
+!README.md
