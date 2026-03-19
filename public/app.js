@@ -60,7 +60,14 @@ const request = async (path, init = {}) => {
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { error: text };
+    }
+  }
   if (!response.ok) {
     throw new Error(payload.error ?? JSON.stringify(payload));
   }
@@ -105,6 +112,7 @@ const stringToColor = (str) => {
 let autoRefreshInterval = null;
 let lastRefreshTime = null;
 let isRefreshing = false;
+let lastStaleActiveId = null;
 
 const refreshProfiles = async () => {
   // Prevent concurrent refreshes
@@ -114,10 +122,26 @@ const refreshProfiles = async () => {
   
   isRefreshing = true;
   try {
-    const [{ profiles, runningProfileIds }, control] = await Promise.all([request("/profiles"), request("/control/state")]);
+    const [profilePayload, control] = await Promise.all([request("/profiles"), request("/control/state")]);
+    const profiles = profilePayload.profiles ?? [];
+    const runningProfileIds = control.runningProfileIds ?? profilePayload.runningProfileIds ?? [];
     const running = new Set(runningProfileIds);
     const activeProfileId = control.activeProfileId;
-    els.activeState.textContent = `Active profile: ${activeProfileId ?? "none"} (updated ${control.updatedAt})`;
+    const staleActiveProfileId = control.staleActiveProfileId ?? null;
+    if (staleActiveProfileId && staleActiveProfileId !== lastStaleActiveId) {
+      setStatus(
+        els.profileActionStatus,
+        "Active profile was released because its browser window is no longer running.",
+        "warn"
+      );
+      lastStaleActiveId = staleActiveProfileId;
+    } else if (!staleActiveProfileId) {
+      lastStaleActiveId = null;
+    }
+
+    const runningStateText = activeProfileId && running.has(activeProfileId) ? "running" : "not running";
+    els.activeState.textContent = `Active profile: ${activeProfileId ?? "none"} (${runningStateText}, updated ${control.updatedAt})`;
+    els.releaseBtn.disabled = !activeProfileId;
     
     lastRefreshTime = new Date();
     updateRefreshIndicator();
@@ -201,7 +225,7 @@ const refreshProfiles = async () => {
     const setActiveBtn = document.createElement("button");
     setActiveBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg> Set Active`;
     setActiveBtn.className = "btn-primary btn-sm";
-    setActiveBtn.disabled = isActive;
+    setActiveBtn.disabled = isActive && isRunning;
     setActiveBtn.onclick = async () => {
       await runAction(
         `Set active ${profile.name}`,
@@ -277,7 +301,7 @@ const refreshProfiles = async () => {
 
     // Group 4: Delete
     const deleteBtn = document.createElement("button");
-    deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+    deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Delete`;
     deleteBtn.title = "Delete";
     deleteBtn.className = "btn-danger btn-sm";
     deleteBtn.onclick = async () => {
@@ -322,7 +346,7 @@ const startAutoRefresh = () => {
     return; // Already running
   }
   
-  // Refresh every 3 seconds
+  // Refresh every second so manual browser-window closes show up quickly.
   autoRefreshInterval = setInterval(async () => {
     try {
       await refreshProfiles();
@@ -330,12 +354,12 @@ const startAutoRefresh = () => {
       // Silently fail on auto-refresh errors to avoid spamming the UI
       console.error("Auto-refresh error:", error);
     }
-  }, 3000);
+  }, 1000);
   
   // Update the time indicator every second
   setInterval(updateRefreshIndicator, 1000);
   
-  console.log("Auto-refresh started: polling every 3 seconds");
+  console.log("Auto-refresh started: polling every 1 second");
 };
 
 // Stop auto-refresh (optional, for future use)
@@ -442,6 +466,11 @@ els.stopAllBtn.onclick = async () => {
 };
 
 els.releaseBtn.onclick = async () => {
+  if (els.releaseBtn.disabled) {
+    setStatus(els.profileActionStatus, "No active profile to release.", "warn");
+    return;
+  }
+
   await runAction(
     "Release active profile",
     () =>

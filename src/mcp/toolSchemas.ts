@@ -65,6 +65,8 @@ export const RunActiveCommandsToolInputSchema = z.object({
     .min(1)
 });
 
+export const ReleaseActiveProfileToolInputSchema = z.object({});
+
 export const EnsureGeminiProfileToolInputSchema = z.object({
   externalDataDir: z.string().min(1).optional(),
   forceUpdate: z.boolean().optional(),
@@ -76,6 +78,13 @@ export const OpenGeminiSessionToolInputSchema = z.object({
   forceUpdate: z.boolean().optional(),
   autoSetActive: z.boolean().optional(),
   targetUrl: z.string().url().optional()
+});
+
+export const OpenUrlSessionToolInputSchema = z.object({
+  url: z.string().url(),
+  profileId: z.string().uuid().optional(),
+  autoSetActive: z.boolean().optional(),
+  autoStart: z.boolean().optional()
 });
 
 export const ListBackupsToolInputSchema = z.object({
@@ -109,6 +118,8 @@ export const ToolDescriptions = {
   getProfile: "Get profile details and running state.",
   setActiveProfile:
     "Mark a profile as the active takeover target so future active commands can control it directly.",
+  releaseActiveProfile:
+    "Release the active takeover profile so agents stop controlling a selected browser profile.",
   runActiveCommands:
     "Run commands on the currently selected active/takeover profile without providing profile id each call.",
   getControlState: "Get active takeover profile state.",
@@ -116,6 +127,9 @@ export const ToolDescriptions = {
     "Create or reconcile a Gemini-ready persistent profile that reuses local Gemini login session data.",
   openGeminiSession:
     "Open a Gemini session in the persistent Gemini profile, and optionally set it as active takeover profile.",
+  openUrlSession:
+    "Open any URL in a resolved profile (specific profile id or current active profile) and optionally set active control.",
+  deleteProfile: "Delete a persisted profile (stopping it first if currently running).",
   listBackups: "List profile backups (optionally filtered by profile id).",
   backupProfile:
     "Create a point-in-time backup of a profile data directory. You can pass destinationDir for VPS-mounted backup paths.",

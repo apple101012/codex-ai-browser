@@ -1,10 +1,11 @@
 const getApiBaseUrl = (): string => process.env.API_BASE_URL ?? "http://127.0.0.1:4321";
 const getApiToken = (): string | undefined => process.env.API_TOKEN;
 
-const buildHeaders = (): HeadersInit => {
-  const headers: HeadersInit = {
-    "content-type": "application/json"
-  };
+const buildHeaders = (hasBody: boolean): HeadersInit => {
+  const headers: HeadersInit = {};
+  if (hasBody) {
+    headers["content-type"] = "application/json";
+  }
 
   const apiToken = getApiToken();
   if (apiToken) {
@@ -15,10 +16,11 @@ const buildHeaders = (): HeadersInit => {
 };
 
 export const apiRequest = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const hasBody = init?.body !== undefined && init?.body !== null;
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
     headers: {
-      ...buildHeaders(),
+      ...buildHeaders(hasBody),
       ...(init?.headers ?? {})
     }
   });

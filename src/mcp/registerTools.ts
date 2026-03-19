@@ -5,7 +5,9 @@ import {
   EnsureGeminiProfileToolInputSchema,
   ListBackupsToolInputSchema,
   OpenGeminiSessionToolInputSchema,
+  OpenUrlSessionToolInputSchema,
   ProfileIdToolInputSchema,
+  ReleaseActiveProfileToolInputSchema,
   RestoreProfileBackupToolInputSchema,
   RunActiveCommandsToolInputSchema,
   RunCommandsToolInputSchema,
@@ -223,6 +225,48 @@ export const registerBrowserTools = (server: RegisterableMcpServer, apiRequest: 
   );
 
   server.registerTool(
+    "release_active_profile",
+    {
+      description: ToolDescriptions.releaseActiveProfile,
+      inputSchema: {}
+    },
+    async (input) => {
+      ReleaseActiveProfileToolInputSchema.parse(input ?? {});
+      const payload = await apiRequest("/control/release", {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      return toText(payload);
+    }
+  );
+
+  server.registerTool(
+    "open_url_session",
+    {
+      description: ToolDescriptions.openUrlSession,
+      inputSchema: {
+        url: z.string().url(),
+        profileId: z.string().uuid().optional(),
+        autoSetActive: z.boolean().optional(),
+        autoStart: z.boolean().optional()
+      }
+    },
+    async (input) => {
+      const parsed = OpenUrlSessionToolInputSchema.parse(input);
+      const payload = await apiRequest("/control/open-url", {
+        method: "POST",
+        body: JSON.stringify({
+          url: parsed.url,
+          profileId: parsed.profileId,
+          autoSetActive: parsed.autoSetActive ?? true,
+          autoStart: parsed.autoStart ?? true
+        })
+      });
+      return toText(payload);
+    }
+  );
+
+  server.registerTool(
     "run_active_commands",
     {
       description: ToolDescriptions.runActiveCommands,
@@ -247,6 +291,23 @@ export const registerBrowserTools = (server: RegisterableMcpServer, apiRequest: 
           autoStart: parsed.autoStart ?? true,
           commands: parsed.commands
         })
+      });
+      return toText(payload);
+    }
+  );
+
+  server.registerTool(
+    "delete_profile",
+    {
+      description: ToolDescriptions.deleteProfile,
+      inputSchema: {
+        profileId: z.string().uuid()
+      }
+    },
+    async (input) => {
+      const parsed = ProfileIdToolInputSchema.parse(input);
+      const payload = await apiRequest(`/profiles/${parsed.profileId}`, {
+        method: "DELETE"
       });
       return toText(payload);
     }

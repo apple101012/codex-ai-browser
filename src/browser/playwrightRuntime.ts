@@ -21,6 +21,8 @@ interface SessionState {
   activePage: Page;
   closed: boolean;
   boundPages: WeakSet<Page>;
+  lastKnownTabs: Array<{ url: string; active: boolean }>;
+  pendingCloseSnapshotTimer: NodeJS.Timeout | null;
 }
 
 export interface PlaywrightRuntimeOptions {
@@ -60,7 +62,9 @@ export class PlaywrightRuntime implements BrowserRuntime {
       context,
       activePage: initialPage,
       closed: false,
-      boundPages: new WeakSet<Page>()
+      boundPages: new WeakSet<Page>(),
+      lastKnownTabs: [],
+      pendingCloseSnapshotTimer: null
     };
     this.bindPageLifecycle(session, initialPage);
     for (const page of context.pages()) {
@@ -69,14 +73,17 @@ export class PlaywrightRuntime implements BrowserRuntime {
     context.on("page", (page) => {
       this.bindPageLifecycle(session, page);
       session.activePage = page;
+      this.updateSessionTabSnapshot(session);
     });
     context.on("close", () => {
+      this.clearPendingCloseSnapshot(session);
       this.markSessionClosed(session);
     });
     this.sessions.set(profile.id, session);
 
     // Restore saved tabs if available
     await this.restoreSavedTabs(session, profile);
+    this.updateSessionTabSnapshot(session);
   }
 
   async stop(profileId: string): Promise<void> {
@@ -84,10 +91,13 @@ export class PlaywrightRuntime implements BrowserRuntime {
     if (!session) {
       return;
     }
-    
+
+    this.clearPendingCloseSnapshot(session);
+    this.updateSessionTabSnapshot(session);
+
     // Save current tabs before stopping
     await this.saveCurrentTabs(session);
-    
+
     this.markSessionClosed(session);
     await this.closeContext(session.context);
   }
@@ -127,6 +137,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
           await page.goto(command.url, { waitUntil: "domcontentloaded" });
         }
         session.activePage = page;
+        this.updateSessionTabSnapshot(session);
         const tabs = await this.listTabs(profile.id, session);
         const activeTabIndex = tabs.findIndex((tab) => tab.active);
         return { type: command.type, ok: true, data: { activeTabIndex, tabs } };
@@ -135,6 +146,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
         const page = this.getPageByIndex(session, command.tabIndex);
         session.activePage = page;
         await page.bringToFront();
+        this.updateSessionTabSnapshot(session);
         return {
           type: command.type,
           ok: true,
@@ -150,6 +162,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
           ? this.getActivePage(session)
           : this.getPageByIndex(session, command.tabIndex);
         await page.close();
+        this.updateSessionTabSnapshot(session);
         const tabs = await this.listTabs(profile.id, session);
         if (tabs.length > 0) {
           session.activePage = this.getActivePage(session);
@@ -192,6 +205,10 @@ export class PlaywrightRuntime implements BrowserRuntime {
     switch (command.type) {
       case "navigate": {
         await page.goto(command.url, { waitUntil: command.waitUntil ?? "domcontentloaded" });
+        const session = this.sessions.get(profile.id);
+        if (session) {
+          this.updateSessionTabSnapshot(session);
+        }
         return {
           type: command.type,
           ok: true,
@@ -391,6 +408,11 @@ export class PlaywrightRuntime implements BrowserRuntime {
       return;
     }
     session.boundPages.add(page);
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
+        this.updateSessionTabSnapshot(session);
+      }
+    });
     page.on("close", () => {
       this.handlePageClosed(session, page);
     });
@@ -409,18 +431,23 @@ export class PlaywrightRuntime implements BrowserRuntime {
 
     const openPages = session.context.pages().filter((page) => !page.isClosed());
     if (openPages.length === 0) {
-      // Save tabs before marking session as closed
+      // Keep the latest snapshot and persist before marking session as closed.
+      this.clearPendingCloseSnapshot(session);
       void this.saveCurrentTabs(session).then(() => {
         this.markSessionClosed(session);
         void this.closeContext(session.context);
       });
+      return;
     }
+
+    this.scheduleSnapshotUpdateAfterClose(session);
   }
 
   private markSessionClosed(session: SessionState): void {
     if (session.closed) {
       return;
     }
+    this.clearPendingCloseSnapshot(session);
     session.closed = true;
     this.sessions.delete(session.profileId);
   }
@@ -441,22 +468,23 @@ export class PlaywrightRuntime implements BrowserRuntime {
     }
 
     try {
-      const tabs = await this.listTabs(session.profileId, session);
-      if (tabs.length === 0) {
-        return;
+      const currentPages = session.context.pages().filter((page) => !page.isClosed());
+      let snapshot = this.normalizeTabs(
+        currentPages.map((page) => ({
+          url: page.url(),
+          active: page === session.activePage
+        }))
+      );
+
+      // If all pages are gone (manual close / Alt+F4), fallback to the latest cached snapshot.
+      if (snapshot.length === 0) {
+        snapshot = this.normalizeTabs(session.lastKnownTabs);
+      } else {
+        session.lastKnownTabs = snapshot;
       }
 
-      // Filter out empty/invalid URLs and map to saved tab format
-      const savedTabs = tabs
-        .filter((tab) => tab.url && !tab.url.startsWith("about:") && tab.url !== "chrome://newtab/")
-        .map((tab) => ({
-          url: tab.url,
-          active: tab.active
-        }));
-
-      if (savedTabs.length > 0) {
-        await this.profileStore.saveTabs(session.profileId, savedTabs);
-      }
+      const savedTabs = snapshot.filter((tab) => this.isPersistableTabUrl(tab.url));
+      await this.profileStore.saveTabs(session.profileId, savedTabs);
     } catch (error) {
       // Ignore errors during tab saving to not block shutdown
       console.error(`Failed to save tabs for profile ${session.profileId}:`, error);
@@ -464,64 +492,165 @@ export class PlaywrightRuntime implements BrowserRuntime {
   }
 
   private async restoreSavedTabs(session: SessionState, profile: ProfileRecord): Promise<void> {
-    if (!profile.savedTabs || profile.savedTabs.length === 0) {
+    const savedTabs = this.normalizeTabs(profile.savedTabs ?? []).filter((tab) => this.isPersistableTabUrl(tab.url));
+    if (savedTabs.length === 0) {
       return;
     }
 
     try {
-      // Get current pages
       const currentPages = session.context.pages().filter((page) => !page.isClosed());
-      
-      // Restore each saved tab
-      let activePageRestored = false;
-      const restoredPages: Page[] = [];
-      
-      for (const savedTab of profile.savedTabs) {
-        try {
-          // Validate URL before navigating
-          new URL(savedTab.url);
-          
-          const page = await session.context.newPage();
-          await page.goto(savedTab.url, { waitUntil: "domcontentloaded", timeout: 10000 });
-          restoredPages.push(page);
-          
-          if (savedTab.active) {
-            session.activePage = page;
-            activePageRestored = true;
-          }
-        } catch (error) {
-          // Skip invalid URLs or navigation failures
-          console.warn(`Failed to restore tab ${savedTab.url}:`, error);
+
+      // Browser channels can auto-restore tabs from profile state; avoid duplicating tabs in that case.
+      const hasRestoredPagesAlready = currentPages.some((page) => this.isPersistableTabUrl(page.url()));
+      if (hasRestoredPagesAlready) {
+        const matchingActive = currentPages.find((page) =>
+          savedTabs.some((tab) => tab.active && tab.url === page.url())
+        );
+        session.activePage = matchingActive ?? currentPages[0] ?? session.activePage;
+        if (!session.activePage.isClosed()) {
+          await session.activePage.bringToFront();
         }
+        return;
       }
 
-      // Close the initial empty page if we successfully restored tabs
-      if (restoredPages.length > 0 && currentPages.length === 1) {
-        const initialPage = currentPages[0];
-        if (initialPage && (initialPage.url() === "about:blank" || initialPage.url() === "chrome://newtab/")) {
-          await initialPage.close();
-        }
+      const restored: Array<{ page: Page; index: number }> = [];
+      const targetActiveIndex = Math.max(
+        0,
+        savedTabs.findIndex((tab) => tab.active)
+      );
+
+      // Reuse the initial page for the first restore to avoid opening then closing a blank tab.
+      const firstPage = currentPages[0] ?? (await session.context.newPage());
+      try {
+        await firstPage.goto(savedTabs[0]?.url ?? "about:blank", {
+          waitUntil: "domcontentloaded",
+          timeout: 15_000
+        });
+        restored.push({ page: firstPage, index: 0 });
+      } catch (error) {
+        console.warn(`Failed to restore tab ${savedTabs[0]?.url ?? ""}:`, error);
       }
 
-      // If no active page was restored, use the first restored or available page
-      if (!activePageRestored) {
-        if (restoredPages.length > 0) {
-          session.activePage = restoredPages[0] as Page;
-        } else {
-          const pages = session.context.pages().filter((page) => !page.isClosed());
-          if (pages.length > 0) {
-            session.activePage = pages[0] as Page;
-          }
+      const remainingRestores = savedTabs.slice(1).map(async (savedTab, offset) => {
+        const page = await session.context.newPage();
+        await page.goto(savedTab.url, {
+          waitUntil: "domcontentloaded",
+          timeout: 15_000
+        });
+        return { page, index: offset + 1 };
+      });
+
+      const remainingResults = await Promise.allSettled(remainingRestores);
+      for (let i = 0; i < remainingResults.length; i += 1) {
+        const result = remainingResults[i];
+        if (result?.status === "fulfilled") {
+          restored.push(result.value);
+          continue;
         }
+        const failedUrl = savedTabs[i + 1]?.url ?? "";
+        console.warn(`Failed to restore tab ${failedUrl}:`, result?.reason);
       }
 
-      // Bring active page to front
-      if (!session.activePage.isClosed()) {
-        await session.activePage.bringToFront();
+      const activeRestored =
+        restored.find((entry) => entry.index === targetActiveIndex)?.page ??
+        restored[0]?.page;
+
+      if (activeRestored) {
+        session.activePage = activeRestored;
+        if (!activeRestored.isClosed()) {
+          await activeRestored.bringToFront();
+        }
+      } else {
+        const fallback = session.context.pages().find((page) => !page.isClosed());
+        if (fallback) {
+          session.activePage = fallback;
+        }
       }
     } catch (error) {
       // If restoration fails, log but don't crash
       console.error(`Failed to restore tabs for profile ${profile.id}:`, error);
     }
+  }
+
+  private updateSessionTabSnapshot(session: SessionState): void {
+    if (session.closed) {
+      return;
+    }
+    const currentPages = session.context.pages().filter((page) => !page.isClosed());
+    if (currentPages.length === 0) {
+      return;
+    }
+    if (session.activePage.isClosed()) {
+      session.activePage = currentPages[0] as Page;
+    }
+    session.lastKnownTabs = this.normalizeTabs(
+      currentPages.map((page) => ({
+        url: page.url(),
+        active: page === session.activePage
+      }))
+    );
+  }
+
+  private scheduleSnapshotUpdateAfterClose(session: SessionState): void {
+    this.clearPendingCloseSnapshot(session);
+    session.pendingCloseSnapshotTimer = setTimeout(() => {
+      session.pendingCloseSnapshotTimer = null;
+      this.updateSessionTabSnapshot(session);
+    }, 300);
+  }
+
+  private clearPendingCloseSnapshot(session: SessionState): void {
+    if (!session.pendingCloseSnapshotTimer) {
+      return;
+    }
+    clearTimeout(session.pendingCloseSnapshotTimer);
+    session.pendingCloseSnapshotTimer = null;
+  }
+
+  private normalizeTabs(
+    tabs: Array<{ url: string; active: boolean } | undefined>
+  ): Array<{ url: string; active: boolean }> {
+    const normalized = tabs
+      .filter((tab): tab is { url: string; active: boolean } => Boolean(tab))
+      .map((tab) => ({
+        url: tab.url.trim(),
+        active: Boolean(tab.active)
+      }))
+      .filter((tab) => tab.url.length > 0);
+
+    if (normalized.length === 0) {
+      return [];
+    }
+
+    const activeIndex = normalized.findIndex((tab) => tab.active);
+    if (activeIndex === -1) {
+      return normalized.map((tab, index) => ({
+        ...tab,
+        active: index === 0
+      }));
+    }
+
+    return normalized.map((tab, index) => ({
+      ...tab,
+      active: index === activeIndex
+    }));
+  }
+
+  private isPersistableTabUrl(url: string): boolean {
+    const value = url.trim().toLowerCase();
+    if (value.length === 0) {
+      return false;
+    }
+
+    // Skip internal placeholder pages that should not become restore state.
+    if (
+      value.startsWith("about:blank") ||
+      value.startsWith("chrome://newtab") ||
+      value.startsWith("edge://newtab")
+    ) {
+      return false;
+    }
+
+    return true;
   }
 }

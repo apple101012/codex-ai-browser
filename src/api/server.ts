@@ -123,10 +123,13 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
   }));
 
   app.get("/profiles", async () => {
+    const controlState = await getReconciledControlState({ controlStore, runtime, store });
     const profiles = await store.list();
     return {
       profiles,
-      runningProfileIds: runtime.listRunningIds()
+      runningProfileIds: controlState.runningProfileIds,
+      activeProfileId: controlState.activeProfileId,
+      controlUpdatedAt: controlState.updatedAt
     };
   });
 
@@ -461,11 +464,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
   });
 
   app.get("/control/state", async () => {
-    const state = controlStore.getState();
-    return {
-      ...state,
-      runningProfileIds: runtime.listRunningIds()
-    };
+    return await getReconciledControlState({ controlStore, runtime, store });
   });
 
   app.post("/control/active-profile", async (request, reply) => {
@@ -496,7 +495,7 @@ export const buildServer = ({ config, store, runtime, controlStore, backupStore:
   });
 
   app.post("/control/active/commands", async (request, reply) => {
-    const state = controlStore.getState();
+    const state = await getReconciledControlState({ controlStore, runtime, store });
     if (!state.activeProfileId) {
       await reply.code(400).send({ error: "No active profile selected." });
       return;
@@ -550,6 +549,50 @@ const getProfileOr404 = async (
 
 const requestScopedLog = (app: { log: { error: (message: unknown) => void } }, error: unknown) => {
   app.log.error(error);
+};
+
+const getReconciledControlState = async ({
+  controlStore,
+  runtime,
+  store
+}: {
+  controlStore: ActiveControlStore;
+  runtime: BrowserRuntime;
+  store: ProfileStore;
+}): Promise<{
+  activeProfileId: string | null;
+  updatedAt: string;
+  runningProfileIds: string[];
+  staleActiveProfileId: string | null;
+}> => {
+  const runningProfileIds = runtime.listRunningIds();
+  const runningSet = new Set(runningProfileIds);
+  const state = controlStore.getState();
+  const activeProfileId = state.activeProfileId;
+  if (!activeProfileId) {
+    return {
+      ...state,
+      runningProfileIds,
+      staleActiveProfileId: null
+    };
+  }
+
+  const profile = await store.get(activeProfileId);
+  const isRunning = runningSet.has(activeProfileId);
+  if (!profile || !isRunning) {
+    const cleared = controlStore.clearActiveProfile();
+    return {
+      ...cleared,
+      runningProfileIds,
+      staleActiveProfileId: activeProfileId
+    };
+  }
+
+  return {
+    ...state,
+    runningProfileIds,
+    staleActiveProfileId: null
+  };
 };
 
 const executeCommandBatch = async ({
