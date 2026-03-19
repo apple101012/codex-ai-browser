@@ -358,7 +358,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
       userAgent: profile.settings.userAgent,
       channel,
       ignoreDefaultArgs: channel ? ["--enable-automation"] : undefined,
-      args: channel ? ["--disable-blink-features=AutomationControlled"] : undefined,
+      args: undefined,
       // Firefox-specific preferences to enable keyboard shortcuts in automation mode
       // Note: These preferences allow MANUAL keyboard shortcuts by the user,
       // but programmatic shortcuts via page.keyboard.press() may still be limited
