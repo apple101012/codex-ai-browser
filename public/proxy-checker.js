@@ -334,7 +334,6 @@ els.checkAllBtn.addEventListener("click", async () => {
   els.exportCsvBtn.disabled = false;
 
   const reachable = rows.filter((r) => r.reachable === true).length;
-  const total = rows.length;
   setStatus(isStopped ? `Stopped. ${done}/${total} checked, ${reachable} reachable.` : `Done. ${reachable}/${total} proxies reachable.`, isStopped ? "warn" : "ok");
 });
 
