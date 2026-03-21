@@ -188,10 +188,11 @@ let autoRefreshInterval = null;
 let lastRefreshTime = null;
 let isRefreshing = false;
 let lastStaleActiveId = null;
+const activeInlineEdits = new Set();
 
 const refreshProfiles = async () => {
-  // Prevent concurrent refreshes
-  if (isRefreshing) {
+  // Prevent concurrent refreshes or stomping on active inline edits
+  if (isRefreshing || activeInlineEdits.size > 0) {
     return;
   }
   
@@ -422,11 +423,18 @@ const refreshProfiles = async () => {
       const inputEl = document.getElementById(`proxy-input-${profile.id}`);
       if (!displayEl || !editEl || !inputEl) return;
 
+      activeInlineEdits.add(profile.id);
       displayEl.style.display = "none";
       editEl.style.display = "block";
       inputEl.value = profile.settings?.proxy?.server ?? "";
       inputEl.focus();
       inputEl.select();
+
+      const closeEdit = () => {
+        activeInlineEdits.delete(profile.id);
+        editEl.style.display = "none";
+        displayEl.style.display = "block";
+      };
 
       document.getElementById(`proxy-save-${profile.id}`).onclick = async () => {
         const trimmed = inputEl.value.trim();
@@ -441,6 +449,7 @@ const refreshProfiles = async () => {
           setStatus(els.profileActionStatus, String(error.message ?? error), "err");
           return;
         }
+        closeEdit();
         await runAction(
           `Update proxy for ${profile.name}`,
           () => request(`/profiles/${profile.id}`, {
@@ -453,8 +462,7 @@ const refreshProfiles = async () => {
       };
 
       document.getElementById(`proxy-cancel-${profile.id}`).onclick = () => {
-        editEl.style.display = "none";
-        displayEl.style.display = "block";
+        closeEdit();
       };
     };
 
