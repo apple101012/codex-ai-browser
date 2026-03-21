@@ -52,6 +52,8 @@ const scoreClass = (score) => {
   return "score-low";
 };
 
+const CONCURRENCY = 3;
+
 // State
 let rows = [];
 let isStopped = false;
@@ -63,6 +65,7 @@ const els = {
   stopBtn: document.getElementById("stopBtn"),
   clearBtn: document.getElementById("clearBtn"),
   exportCsvBtn: document.getElementById("exportCsvBtn"),
+  hideFailedToggle: document.getElementById("hideFailedToggle"),
   statusText: document.getElementById("statusText"),
   progressBarWrap: document.getElementById("progressBarWrap"),
   progressBarFill: document.getElementById("progressBarFill"),
@@ -155,6 +158,8 @@ const renderRow = (row, idx) => {
        </select>`
     : "";
 
+  const reCheckDisabled = row.status === "checking" ? " disabled" : "";
+
   tr.innerHTML = `
     <td style="color: var(--text-muted);">${idx + 1}</td>
     <td><span style="font-family: monospace; font-size: 0.8rem;">${maskProxy(row.raw)}</span></td>
@@ -164,8 +169,21 @@ const renderRow = (row, idx) => {
     <td>${ispHtml}</td>
     <td>${scamalyticsHtml}</td>
     <td>${spamhausHtml}</td>
-    <td>${assignSelect}</td>
+    <td style="white-space: nowrap;">
+      ${assignSelect}
+      <button id="recheck-${idx}" class="assign-btn" title="Re-check this proxy"${reCheckDisabled} style="margin-top: 4px;">
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        Re-check
+      </button>
+    </td>
   `;
+
+  // Apply hide-failed filter
+  if (els.hideFailedToggle?.checked && row.reachable === false) {
+    tr.style.display = "none";
+  } else {
+    tr.style.display = "";
+  }
 
   if (assignSelect) {
     const sel = document.getElementById(`assign-select-${idx}`);
@@ -185,6 +203,16 @@ const renderRow = (row, idx) => {
         }
       });
     }
+  }
+
+  const reCheckBtn = document.getElementById(`recheck-${idx}`);
+  if (reCheckBtn) {
+    reCheckBtn.addEventListener("click", async () => {
+      reCheckBtn.disabled = true;
+      row.ip = null; row.geo = null; row.scamalytics = null; row.spamhaus = null; row.spamhausListed = null;
+      await checkProxy(row, idx);
+      updateSummary();
+    });
   }
 };
 
@@ -285,16 +313,21 @@ els.checkAllBtn.addEventListener("click", async () => {
   }
 
   let done = 0;
-  for (let i = 0; i < rows.length; i++) {
-    if (isStopped) {
-      rows[i].status = "pending";
-      break;
+  let nextIdx = 0;
+  const total = rows.length;
+
+  const worker = async () => {
+    while (nextIdx < total && !isStopped) {
+      const i = nextIdx++;
+      await checkProxy(rows[i], i);
+      done++;
+      updateProgress(done, total);
+      updateSummary();
     }
-    await checkProxy(rows[i], i);
-    done++;
-    updateProgress(done, rows.length);
-    updateSummary();
-  }
+  };
+
+  // Run up to CONCURRENCY workers in parallel
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, total) }, worker));
 
   els.checkAllBtn.disabled = false;
   els.stopBtn.disabled = true;
@@ -318,6 +351,19 @@ els.clearBtn.addEventListener("click", () => {
   els.progressBarWrap.style.display = "none";
   els.exportCsvBtn.disabled = true;
   setStatus("", "ok");
+});
+
+els.hideFailedToggle?.addEventListener("change", () => {
+  rows.forEach((_, i) => {
+    const tr = document.getElementById(`proxy-row-${i}`);
+    if (!tr) return;
+    const row = rows[i];
+    if (els.hideFailedToggle.checked && row.reachable === false) {
+      tr.style.display = "none";
+    } else {
+      tr.style.display = "";
+    }
+  });
 });
 
 els.exportCsvBtn.addEventListener("click", () => {

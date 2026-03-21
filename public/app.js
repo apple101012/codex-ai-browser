@@ -214,14 +214,33 @@ const refreshProfiles = async () => {
       lastStaleActiveId = null;
     }
 
+    const timeAgo = (iso) => {
+      const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+      if (s < 5) return "just now";
+      if (s < 60) return `${s}s ago`;
+      if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+      return `${Math.floor(s / 3600)}h ago`;
+    };
     const runningStateText = activeProfileId && running.has(activeProfileId) ? "running" : "not running";
-    els.activeState.textContent = `Active profile: ${activeProfileId ?? "none"} (${runningStateText}, updated ${control.updatedAt})`;
+    els.activeState.textContent = `Active profile: ${activeProfileId ?? "none"} (${runningStateText}, updated ${timeAgo(control.updatedAt)})`;
     els.releaseBtn.disabled = !activeProfileId;
     
     lastRefreshTime = new Date();
     updateRefreshIndicator();
 
     els.profilesBody.innerHTML = "";
+    if (profiles.length === 0) {
+      const emptyRow = document.createElement("tr");
+      emptyRow.innerHTML = `
+        <td colspan="4" style="text-align: center; padding: 48px 24px;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--text-muted);">
+            <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity: 0.25;"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            <div style="font-weight: 600; font-size: 0.95rem;">No profiles yet</div>
+            <div style="font-size: 0.82rem;">Use "Create Browser Profile" above to add one.</div>
+          </div>
+        </td>`;
+      els.profilesBody.append(emptyRow);
+    }
     for (const profile of profiles) {
     const isRunning = running.has(profile.id);
     const isVisible = profile.settings?.headless === false;

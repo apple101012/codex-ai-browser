@@ -134,7 +134,7 @@
                 placeholder="proxy.smartproxy.net:3120:username:password&#10;proxy.smartproxy.net:3120:username2:password2&#10;192.168.1.1:8080"
                 style="width: 100%; font-family: monospace; font-size: 0.85rem; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; color: var(--text-main); padding: 12px; resize: vertical; line-height: 1.5;"
               ></textarea>
-              <div class="action-row mt-3" style="align-items: center; gap: 12px;">
+              <div class="action-row mt-3" style="align-items: center; gap: 12px; flex-wrap: wrap;">
                 <button id="checkAllBtn" class="btn-primary">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                   Check All
@@ -145,7 +145,11 @@
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                   Export CSV
                 </button>
-                <span id="statusText" class="status-text" style="margin: 0; flex: 1; text-align: right;"></span>
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-muted); cursor: pointer; margin-left: auto;">
+                  <input type="checkbox" id="hideFailedToggle" style="cursor: pointer;" />
+                  Hide failed
+                </label>
+                <span id="statusText" class="status-text" style="margin: 0;"></span>
               </div>
               <div class="progress-bar-wrap" id="progressBarWrap" style="display:none;">
                 <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
@@ -173,7 +177,7 @@
                       <th>ISP / Org</th>
                       <th>Scamalytics</th>
                       <th>Spamhaus</th>
-                      <th>Actions</th>
+                      <th>Assign / Re-check</th>
                     </tr>
                   </thead>
                   <tbody id="resultsBody"></tbody>

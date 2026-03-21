@@ -183,6 +183,9 @@ body {
   transform: translateY(-2px);
   box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
 }
+.glass-panel--static:hover {
+  transform: none;
+}
 
 .panel-header {
   padding: 16px 20px;
