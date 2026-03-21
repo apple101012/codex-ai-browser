@@ -4,6 +4,7 @@ import staticPlugin from "@fastify/static";
 import os from "node:os";
 import path from "node:path";
 import { unlink } from "node:fs/promises";
+import { resolve4 as dnsResolve4 } from "node:dns/promises";
 import { z, ZodError } from "zod";
 import type { FastifyReply } from "fastify";
 import { authHook } from "./auth.js";
@@ -152,6 +153,10 @@ export const buildServer = ({
     await reply.sendFile("index.html");
   });
 
+  app.get("/proxy-checker", async (_, reply) => {
+    await reply.sendFile("proxy-checker.html");
+  });
+
   app.get("/", async (_, reply) => {
     await reply.redirect("/app");
   });
@@ -178,6 +183,21 @@ export const buildServer = ({
       timeoutMs: payload.timeoutMs
     });
     await reply.send(redactProxyCheckResult(result));
+  });
+
+  app.post("/proxy/reputation", async (request, reply) => {
+    const { ip } = z.object({ ip: z.string().regex(/^(25[0-5]|2[0-4]\d|[01]?\d\d?)(\.(25[0-5]|2[0-4]\d|[01]?\d\d?)){3}$/, "Invalid IPv4 address") }).parse(request.body ?? {});
+    const [geo, scamalytics, spamhaus] = await Promise.allSettled([
+      fetchGeoInfo(ip),
+      fetchScamalyticsInfo(ip),
+      checkSpamhaus(ip)
+    ]);
+    await reply.send({
+      ip,
+      geo: geo.status === "fulfilled" ? geo.value : { error: String((geo as PromiseRejectedResult).reason?.message ?? "failed") },
+      scamalytics: scamalytics.status === "fulfilled" ? scamalytics.value : { error: String((scamalytics as PromiseRejectedResult).reason?.message ?? "failed") },
+      spamhaus: spamhaus.status === "fulfilled" ? spamhaus.value : { error: String((spamhaus as PromiseRejectedResult).reason?.message ?? "failed") }
+    });
   });
 
   app.get("/profiles", async () => {
@@ -879,6 +899,58 @@ const redactProfileForResponse = (
       proxy: redactProxyForResponse(profile.settings.proxy)
     }
   };
+};
+
+const fetchGeoInfo = async (ip: string): Promise<{
+  country: string; region: string; city: string; isp: string; org: string;
+}> => {
+  const res = await fetch(
+    `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,regionName,city,isp,org`,
+    { signal: AbortSignal.timeout(8_000) }
+  );
+  const data = await res.json() as { status: string; message?: string; country?: string; regionName?: string; city?: string; isp?: string; org?: string };
+  if (data.status !== "success") throw new Error(data.message ?? "Geo lookup failed");
+  return { country: data.country ?? "", region: data.regionName ?? "", city: data.city ?? "", isp: data.isp ?? "", org: data.org ?? "" };
+};
+
+const fetchScamalyticsInfo = async (ip: string): Promise<{
+  score: number | null; risk: string | null; url: string;
+}> => {
+  const url = `https://scamalytics.com/ip/${encodeURIComponent(ip)}`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
+    signal: AbortSignal.timeout(10_000)
+  });
+  const html = await res.text();
+  const scoreMatch = html.match(/"fraud_score"\s*:\s*"?(\d+)"?/i) ?? html.match(/fraud[_ ]score[^<\d]*?(\d+)/i) ?? html.match(/<div[^>]*class="[^"]*score[^"]*"[^>]*>\s*(\d+)/i);
+  const riskMatch = html.match(/(very high|high|medium|low)\s*risk/i);
+  const score = scoreMatch?.[1] !== undefined ? parseInt(scoreMatch[1], 10) : null;
+  const risk = riskMatch?.[1]?.toLowerCase() ?? null;
+  if (score === null && risk === null) {
+    throw new Error("Score unavailable — page may be blocked or markup changed");
+  }
+  return { score, risk, url };
+};
+
+const checkSpamhaus = async (ip: string): Promise<{
+  listed: boolean; codes: string[];
+}> => {
+  const parts = ip.split(".");
+  if (parts.length !== 4) throw new Error("IPv4 required for Spamhaus lookup");
+  const reversed = parts.slice().reverse().join(".");
+  try {
+    const addresses = await dnsResolve4(`${reversed}.zen.spamhaus.org`);
+    const codes = addresses.map((addr) => {
+      if (addr === "127.0.0.2") return "SBL";
+      if (addr === "127.0.0.4") return "XBL";
+      if (addr === "127.0.0.9") return "SBL+CSS";
+      if (addr === "127.0.0.10" || addr === "127.0.0.11") return "PBL";
+      return addr;
+    });
+    return { listed: true, codes };
+  } catch {
+    return { listed: false, codes: [] };
+  }
 };
 
 const stripProxyCredentials = (server: string): string => {

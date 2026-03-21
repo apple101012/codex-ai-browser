@@ -1,3 +1,5 @@
+import { normalizeProxyServer, parseProxyInput } from "/app/proxy-utils.js";
+
 const els = {
   apiToken: document.getElementById("apiToken"),
   saveTokenBtn: document.getElementById("saveTokenBtn"),
@@ -165,96 +167,6 @@ const stringToColor = (str) => {
   return `hsl(${hue}, 70%, 60%)`;
 };
 
-const normalizeProxyServer = (value, defaultScheme = "http:") => {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error("Proxy server is required.");
-  }
-
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `${defaultScheme}//${trimmed}`;
-  const parsed = new URL(withScheme);
-  if (!parsed.hostname || !parsed.port) {
-    throw new Error("Proxy must include a host and port.");
-  }
-
-  return parsed;
-};
-
-const parseProxyInput = (input) => {
-  const raw = input.trim();
-  if (!raw) {
-    return null;
-  }
-
-  const cleaned = raw.replace(/^proxy\s*=\s*/i, "").trim();
-  if (!cleaned) {
-    return null;
-  }
-
-  const parseFromUrl = (value) => {
-    const parsed = normalizeProxyServer(value);
-    const proxy = {
-      server: `${parsed.protocol}//${parsed.host}`,
-      ...(parsed.username ? { username: decodeURIComponent(parsed.username) } : {}),
-      ...(parsed.password ? { password: decodeURIComponent(parsed.password) } : {})
-    };
-    return proxy;
-  };
-
-  if (cleaned.includes("://")) {
-    return parseFromUrl(cleaned);
-  }
-
-  if (cleaned.includes("@")) {
-    return parseFromUrl(`http://${cleaned}`);
-  }
-
-  const pipeParts = cleaned.split("|").map((part) => part.trim()).filter(Boolean);
-  const commaParts = cleaned.split(",").map((part) => part.trim()).filter(Boolean);
-
-  const authParts = pipeParts.length > 1 ? pipeParts : commaParts.length > 1 ? commaParts : null;
-  if (authParts) {
-    if (authParts.length === 3) {
-      const [server, username, password] = authParts;
-      const parsed = parseFromUrl(server);
-      return {
-        ...parsed,
-        username,
-        password
-      };
-    }
-
-    if (authParts.length === 4) {
-      const [host, port, username, password] = authParts;
-      return {
-        server: `http://${host}:${port}`,
-        username,
-        password
-      };
-    }
-  }
-
-  const colonParts = cleaned.split(":").map((part) => part.trim()).filter(Boolean);
-  if (colonParts.length === 2) {
-    const [host, port] = colonParts;
-    return {
-      server: `http://${host}:${port}`
-    };
-  }
-
-  if (colonParts.length === 4) {
-    const [host, port, username, password] = colonParts;
-    return {
-      server: `http://${host}:${port}`,
-      username,
-      password
-    };
-  }
-
-  throw new Error(
-    "Unsupported proxy format. Use host:port, host:port:username:password, user:pass@host:port, or scheme://host:port."
-  );
-};
 
 const summarizeProxy = (proxy) => {
   if (!proxy?.server) {
@@ -317,6 +229,7 @@ const refreshProfiles = async () => {
     const proxySummary = summarizeProxy(profile.settings?.proxy);
     const color = stringToColor(profile.id);
     
+    const proxyHasValue = Boolean(profile.settings?.proxy?.server);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>
@@ -332,7 +245,23 @@ const refreshProfiles = async () => {
       <td>
         <div style="font-weight: 500;">${profile.engine}</div>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${isVisible ? "Visible UI" : "Hidden UI"}</div>
-        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">Proxy: ${proxySummary}</div>
+        <div id="proxy-display-${profile.id}" style="margin-top: 6px;">
+          ${proxyHasValue
+            ? `<span style="font-size: 0.75rem; color: var(--primary); font-family: monospace;">&#x1F512; ${proxySummary}</span>`
+            : `<span style="font-size: 0.75rem; color: var(--text-muted);">No proxy</span>`}
+        </div>
+        <div id="proxy-edit-${profile.id}" style="display: none; margin-top: 6px;">
+          <input
+            id="proxy-input-${profile.id}"
+            type="text"
+            placeholder="host:port:user:pass"
+            style="width: 100%; padding: 5px 8px; font-size: 0.78rem; font-family: monospace; background: var(--bg-dark); border: 1px solid var(--border-highlight); border-radius: 6px; color: var(--text-main);"
+          />
+          <div style="display: flex; gap: 4px; margin-top: 5px;">
+            <button id="proxy-save-${profile.id}" class="btn-success btn-sm" style="font-size: 0.72rem; padding: 3px 10px;">Save</button>
+            <button id="proxy-cancel-${profile.id}" class="btn-secondary btn-sm" style="font-size: 0.72rem; padding: 3px 10px;">Cancel</button>
+          </div>
+        </div>
       </td>
       <td>
         <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start;">
@@ -464,48 +393,50 @@ const refreshProfiles = async () => {
     grp3.className = "btn-group";
     grp3.append(showBtn, hideBtn);
 
-    // Group 4: Proxy
+    // Group 4: Proxy (inline edit)
     const proxyBtn = document.createElement("button");
-    proxyBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h16"></path></svg> Proxy`;
+    proxyBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> Edit Proxy`;
     proxyBtn.className = "btn-secondary btn-sm";
-    proxyBtn.onclick = async () => {
-      const currentProxy = profile.settings?.proxy?.server ?? "";
-      const proxyInput = window.prompt(
-        "Paste a proxy string. Supported formats: host:port, host:port:user:pass, user:pass@host:port, socks5://host:port",
-        currentProxy
-      );
-      if (proxyInput === null) {
-        return;
-      }
+    proxyBtn.onclick = () => {
+      const displayEl = document.getElementById(`proxy-display-${profile.id}`);
+      const editEl = document.getElementById(`proxy-edit-${profile.id}`);
+      const inputEl = document.getElementById(`proxy-input-${profile.id}`);
+      if (!displayEl || !editEl || !inputEl) return;
 
-      const trimmed = proxyInput.trim();
-      if (!trimmed) {
-        setStatus(els.profileActionStatus, "Proxy unchanged. Use Clear Proxy to remove it.", "warn");
-        return;
-      }
+      displayEl.style.display = "none";
+      editEl.style.display = "block";
+      inputEl.value = profile.settings?.proxy?.server ?? "";
+      inputEl.focus();
+      inputEl.select();
 
-      let proxy;
-      try {
-        proxy = parseProxyInput(trimmed);
-      } catch (error) {
-        setStatus(els.profileActionStatus, String(error.message ?? error), "err");
-        return;
-      }
-
-      await runAction(
-        `Update proxy for ${profile.name}`,
-        () =>
-          request(`/profiles/${profile.id}`, {
+      document.getElementById(`proxy-save-${profile.id}`).onclick = async () => {
+        const trimmed = inputEl.value.trim();
+        if (!trimmed) {
+          setStatus(els.profileActionStatus, "Enter a proxy string or use Clear Proxy to remove.", "warn");
+          return;
+        }
+        let proxy;
+        try {
+          proxy = parseProxyInput(trimmed);
+        } catch (error) {
+          setStatus(els.profileActionStatus, String(error.message ?? error), "err");
+          return;
+        }
+        await runAction(
+          `Update proxy for ${profile.name}`,
+          () => request(`/profiles/${profile.id}`, {
             method: "PATCH",
-            body: JSON.stringify({
-              settings: {
-                proxy
-              }
-            })
+            body: JSON.stringify({ settings: { proxy } })
           }),
-        els.profileActionStatus
-      );
-      await refreshProfiles();
+          els.profileActionStatus
+        );
+        await refreshProfiles();
+      };
+
+      document.getElementById(`proxy-cancel-${profile.id}`).onclick = () => {
+        editEl.style.display = "none";
+        displayEl.style.display = "block";
+      };
     };
 
     const clearProxyBtn = document.createElement("button");
