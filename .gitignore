@@ -46,3 +46,4 @@ VALIDATE_*.js
 *.ics
 !LICENSE
 !README.md
+cmd.json
