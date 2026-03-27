@@ -100,6 +100,24 @@ if (!gotLock) {
         mainWindow.show();
       });
 
+      // Sync initial viewport size once content is loaded
+      mainWindow.webContents.once("did-finish-load", async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const [width, height] = mainWindow.getContentSize();
+        try {
+          const stateRes = await fetch(`http://${HOST}:${PORT}/control/state`);
+          if (!stateRes.ok) return;
+          const state = await stateRes.json();
+          const activeId = state.activeProfileId;
+          if (!activeId) return;
+          await fetch(`http://${HOST}:${PORT}/viewport`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ profileId: activeId, width, height })
+          });
+        } catch { /* best-effort */ }
+      });
+
       let loadFailed = false;
       await mainWindow.loadURL(APP_URL).catch((err) => {
         console.error("[window] loadURL failed:", err);
@@ -129,6 +147,28 @@ if (!gotLock) {
       });
 
       mainWindow.on("closed", () => { mainWindow = null; });
+
+      // Sync viewport size to active Playwright profile on window resize
+      let _resizeTimer = null;
+      mainWindow.on("resize", () => {
+        clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(async () => {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          const [width, height] = mainWindow.getContentSize();
+          try {
+            const stateRes = await fetch(`http://${HOST}:${PORT}/control/state`);
+            if (!stateRes.ok) return;
+            const state = await stateRes.json();
+            const activeId = state.activeProfileId;
+            if (!activeId) return;
+            await fetch(`http://${HOST}:${PORT}/viewport`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ profileId: activeId, width, height })
+            });
+          } catch { /* best-effort */ }
+        }, 300);
+      });
     } finally {
       isCreatingWindow = false;
     }

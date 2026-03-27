@@ -49,6 +49,7 @@ interface SessionState {
   context: BrowserContext;
   activePage: Page;
   closed: boolean;
+  isHeadless: boolean;
   boundPages: WeakSet<Page>;
   lastKnownTabs: Array<{ url: string; active: boolean }>;
   pendingCloseSnapshotTimer: NodeJS.Timeout | null;
@@ -230,6 +231,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
       context,
       activePage: initialPage,
       closed: false,
+      isHeadless: profile.settings.headless ?? this.defaultHeadless,
       boundPages: new WeakSet<Page>(),
       lastKnownTabs: [],
       pendingCloseSnapshotTimer: null,
@@ -301,6 +303,18 @@ export class PlaywrightRuntime implements BrowserRuntime {
     const session = this.sessions.get(profileId);
     if (!session || session.closed) throw new Error(`Profile ${profileId} is not running.`);
     await session.context.addCookies(cookies);
+  }
+
+  async setViewportSize(profileId: string, width: number, height: number): Promise<void> {
+    const session = this.sessions.get(profileId);
+    if (!session || session.closed) return;
+    // Skip headed (visible) profiles — their OS window controls its own size.
+    // Calling page.setViewportSize() on a headed Chrome window triggers an
+    // OS-level window resize which causes a white flash / blank page.
+    if (!session.isHeadless) return;
+    // Update all open pages so media queries re-evaluate and layout reflows
+    const pages = session.context.pages().filter((p) => !p.isClosed());
+    await Promise.all(pages.map((p) => p.setViewportSize({ width, height })));
   }
 
   async execute(profile: ProfileRecord, command: BrowserCommand): Promise<CommandExecutionResult> {

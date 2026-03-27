@@ -158,6 +158,16 @@ const getTargetUrl = () => {
   return url;
 };
 
+const escapeHtml = (str) => {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+};
+
 const stringToColor = (str) => {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -199,7 +209,9 @@ const refreshProfiles = async () => {
   isRefreshing = true;
   try {
     const [profilePayload, control] = await Promise.all([request("/profiles"), request("/control/state")]);
-    const profiles = profilePayload.profiles ?? [];
+    const filterText = (document.getElementById("profileSearchInput")?.value ?? "").toLowerCase().trim();
+    const allProfiles = profilePayload.profiles ?? [];
+    const profiles = filterText ? allProfiles.filter((p) => p.name.toLowerCase().includes(filterText)) : allProfiles;
     const runningProfileIds = control.runningProfileIds ?? profilePayload.runningProfileIds ?? [];
     const running = new Set(runningProfileIds);
     const activeProfileId = control.activeProfileId;
@@ -511,7 +523,14 @@ const refreshProfiles = async () => {
       await refreshProfiles();
     };
 
-    actionsContainer.append(grp1, grp2, grp3, grp4, deleteBtn);
+    // Group 5: Preview screenshot
+    const previewBtn = document.createElement("button");
+    previewBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg> Preview`;
+    previewBtn.className = "btn-secondary btn-sm";
+    previewBtn.disabled = !isRunning;
+    previewBtn.onclick = () => openScreenshotPreview(profile.id, profile.name);
+
+    actionsContainer.append(grp1, grp2, grp3, grp4, previewBtn, deleteBtn);
     els.profilesBody.append(tr);
   }
   } finally {
@@ -560,6 +579,68 @@ const stopAutoRefresh = () => {
     clearInterval(autoRefreshInterval);
     autoRefreshInterval = null;
     console.log("Auto-refresh stopped");
+  }
+};
+
+// Profile search filter — re-render on input
+document.getElementById("profileSearchInput")?.addEventListener("input", () => {
+  refreshProfiles().catch(() => {});
+});
+
+// ── Screenshot Preview Modal ──────────────────────────────────────────────────
+
+const screenshotModal = document.getElementById("screenshotModal");
+const screenshotModalImg = document.getElementById("screenshotModalImg");
+const screenshotModalTitle = document.getElementById("screenshotModalTitle");
+const screenshotModalStatus = document.getElementById("screenshotModalStatus");
+const screenshotModalClose = document.getElementById("screenshotModalClose");
+
+const closeScreenshotModal = () => {
+  screenshotModal.style.display = "none";
+  if (screenshotModalImg.dataset.blobUrl) {
+    URL.revokeObjectURL(screenshotModalImg.dataset.blobUrl);
+    delete screenshotModalImg.dataset.blobUrl;
+  }
+  screenshotModalImg.src = "";
+};
+screenshotModalClose?.addEventListener("click", closeScreenshotModal);
+screenshotModal?.addEventListener("click", (e) => {
+  if (e.target === screenshotModal) closeScreenshotModal();
+});
+
+const openScreenshotPreview = async (profileId, profileName) => {
+  screenshotModal.style.display = "flex";
+  screenshotModalImg.src = "";
+  screenshotModalTitle.textContent = `Screenshot — ${profileName}`;
+  screenshotModalStatus.textContent = "Taking screenshot…";
+  setStatus(screenshotModalStatus, "Taking screenshot…", "warn");
+  try {
+    const res = await request(`/profiles/${encodeURIComponent(profileId)}/commands`, {
+      method: "POST",
+      body: JSON.stringify({ commands: [{ type: "screenshot" }] })
+    });
+    const artifactPath = res.results?.[0]?.path ?? res.results?.[0]?.result?.path ?? null;
+    if (!artifactPath) {
+      setStatus(screenshotModalStatus, "No screenshot returned.", "err");
+      return;
+    }
+    // Fetch with auth headers (img src doesn't send Bearer token)
+    const imgRes = await fetch(`/artifacts?path=${encodeURIComponent(artifactPath)}`, { headers: headers() });
+    if (!imgRes.ok) {
+      setStatus(screenshotModalStatus, "Failed to fetch screenshot image.", "err");
+      return;
+    }
+    const blob = await imgRes.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    // Revoke previous blob URL if any
+    if (screenshotModalImg.dataset.blobUrl) {
+      URL.revokeObjectURL(screenshotModalImg.dataset.blobUrl);
+    }
+    screenshotModalImg.dataset.blobUrl = objectUrl;
+    screenshotModalImg.src = objectUrl;
+    setStatus(screenshotModalStatus, "Screenshot ready.", "ok");
+  } catch (err) {
+    setStatus(screenshotModalStatus, `Failed: ${err.message ?? err}`, "err");
   }
 };
 
@@ -785,3 +866,282 @@ refreshProfiles().catch((error) => {
   // Start auto-refresh after initial load
   startAutoRefresh();
 });
+
+// ── Profile Templates: Export / Import ────────────────────────────────────────
+
+document.getElementById("exportProfilesBtn").onclick = async () => {
+  const statusEl = document.getElementById("templateStatus");
+  try {
+    setStatus(statusEl, "Exporting...", "warn");
+    const data = await request("/profiles");
+    const profiles = (data.profiles ?? []).map((p) => ({
+      name: p.name,
+      engine: p.engine,
+      settings: {
+        ...(p.settings?.userAgent ? { userAgent: p.settings.userAgent } : {}),
+        headless: p.settings?.headless ?? false,
+        // Proxy server (credentials omitted for security — re-enter after import if needed)
+        ...(p.settings?.proxy?.server ? { proxy: { server: p.settings.proxy.server } } : {})
+      }
+    }));
+    const blob = new Blob([JSON.stringify({ profiles }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `profiles-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus(statusEl, `Exported ${profiles.length} profile(s).`, "ok");
+  } catch (err) {
+    setStatus(statusEl, `Export failed: ${err.message ?? err}`, "err");
+  }
+};
+
+document.getElementById("importProfilesFile").onchange = async (event) => {
+  const statusEl = document.getElementById("templateStatus");
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    setStatus(statusEl, "Importing...", "warn");
+    const text = await file.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      setStatus(statusEl, "Invalid JSON file.", "err");
+      return;
+    }
+    const profiles = Array.isArray(parsed) ? parsed : (parsed.profiles ?? []);
+    if (!Array.isArray(profiles) || profiles.length === 0) {
+      setStatus(statusEl, "No profiles found in file.", "err");
+      return;
+    }
+    const result = await request("/profiles/bulk-import", {
+      method: "POST",
+      body: JSON.stringify({ profiles })
+    });
+    const { created = [], errors = [] } = result;
+    const msg = `Imported ${created.length} profile(s)${errors.length ? `, ${errors.length} failed` : ""}.`;
+    setStatus(statusEl, msg, errors.length ? "warn" : "ok");
+    await refreshProfiles();
+  } catch (err) {
+    setStatus(statusEl, `Import failed: ${err.message ?? err}`, "err");
+  }
+  event.target.value = "";
+};
+
+// ── Scheduled Tasks ───────────────────────────────────────────────────────────
+
+const refreshSchedules = async () => {
+  const statusEl = document.getElementById("scheduleStatus");
+  const listEl = document.getElementById("schedulesList");
+  try {
+    const data = await request("/schedules");
+    const schedules = data.schedules ?? [];
+    if (schedules.length === 0) {
+      listEl.innerHTML = `<div style="font-size:0.82rem;color:var(--text-muted);padding:8px 0;">No schedules yet.</div>`;
+      return;
+    }
+    listEl.innerHTML = schedules.map((s) => `
+      <div style="background:var(--bg-dark);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:0.88rem;">${escapeHtml(s.label ?? s.id.slice(0, 12) + "…")}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-top:3px;word-break:break-all;">Profile: ${escapeHtml(s.profileId)}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">Interval: ${escapeHtml(String(s.intervalMs))}ms ${s.enabled ? '• <span style="color:var(--success)">enabled</span>' : '• <span style="color:var(--text-muted)">disabled</span>'}</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;">
+            <button class="btn-secondary btn-sm" data-sched-toggle="${s.id}" data-enabled="${s.enabled}">${s.enabled ? "Disable" : "Enable"}</button>
+            <button class="btn-info btn-sm" data-sched-run="${s.id}">Run Now</button>
+            <button class="btn-danger btn-sm" data-sched-del="${s.id}">Delete</button>
+          </div>
+        </div>
+      </div>
+    `).join("");
+
+    listEl.querySelectorAll("[data-sched-toggle]").forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute("data-sched-toggle");
+        const currentlyEnabled = btn.getAttribute("data-enabled") === "true";
+        try {
+          setStatus(statusEl, "Updating...", "warn");
+          await request(`/schedules/${id}`, { method: "PATCH", body: JSON.stringify({ enabled: !currentlyEnabled }) });
+          setStatus(statusEl, "Updated.", "ok");
+          await refreshSchedules();
+        } catch (err) { setStatus(statusEl, `Failed: ${err.message ?? err}`, "err"); }
+      };
+    });
+
+    listEl.querySelectorAll("[data-sched-run]").forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute("data-sched-run");
+        try {
+          setStatus(statusEl, "Running...", "warn");
+          const res = await request(`/schedules/${id}/run`, { method: "POST", body: JSON.stringify({}) });
+          setStatus(statusEl, res.ran ? "Ran successfully." : `Skipped: ${res.reason ?? "already running"}`, res.ran ? "ok" : "warn");
+        } catch (err) { setStatus(statusEl, `Failed: ${err.message ?? err}`, "err"); }
+      };
+    });
+
+    listEl.querySelectorAll("[data-sched-del]").forEach((btn) => {
+      btn.onclick = async () => {
+        const id = btn.getAttribute("data-sched-del");
+        if (!window.confirm("Delete this schedule?")) return;
+        try {
+          setStatus(statusEl, "Deleting...", "warn");
+          await request(`/schedules/${id}`, { method: "DELETE" });
+          setStatus(statusEl, "Deleted.", "ok");
+          await refreshSchedules();
+        } catch (err) { setStatus(statusEl, `Failed: ${err.message ?? err}`, "err"); }
+      };
+    });
+  } catch (err) {
+    listEl.innerHTML = `<div style="font-size:0.82rem;color:var(--status-err);">Failed to load schedules: ${err.message ?? err}</div>`;
+  }
+};
+
+// ── Schedule step builder ─────────────────────────────────────────────────────
+
+let scheduleSteps = [];
+
+const renderScheduleSteps = () => {
+  const container = document.getElementById("scheduleStepsContainer");
+  if (!container) return;
+  if (scheduleSteps.length === 0) {
+    container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);padding:4px 0;">No steps — defaults to screenshot.</div>`;
+    return;
+  }
+  container.innerHTML = scheduleSteps.map((step, i) => {
+    const label = step.type + (step.url ? `: ${step.url}` : step.selector ? `: ${step.selector}` : step.text ? `: ${step.text}` : "");
+    return `<div style="display:flex;align-items:center;gap:6px;background:var(--bg-dark);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:0.78rem;">
+      <span style="flex:1;color:var(--text-main);font-family:monospace;">${escapeHtml(label)}</span>
+      <button class="btn-danger btn-sm" data-step-remove="${i}" style="padding:2px 7px;font-size:0.72rem;">✕</button>
+    </div>`;
+  }).join("");
+  container.querySelectorAll("[data-step-remove]").forEach((btn) => {
+    btn.onclick = () => {
+      scheduleSteps.splice(Number(btn.getAttribute("data-step-remove")), 1);
+      renderScheduleSteps();
+    };
+  });
+};
+
+document.getElementById("scheduleAddStepBtn")?.addEventListener("click", () => {
+  const type = document.getElementById("scheduleStepType")?.value ?? "screenshot";
+  let step = { type };
+  if (type === "navigate") {
+    const url = window.prompt("Enter URL to navigate to:");
+    if (!url) return;
+    step = { type, url };
+  } else if (type === "click" || type === "extractText") {
+    const selector = window.prompt(`Enter CSS selector for ${type}:`);
+    if (!selector) return;
+    step = { type, selector };
+  } else if (type === "type") {
+    const selector = window.prompt("Enter CSS selector to type into:");
+    if (!selector) return;
+    const text = window.prompt("Enter text to type:");
+    if (text === null) return;
+    step = { type, selector, text };
+  } else if (type === "scroll") {
+    const selector = window.prompt("Enter CSS selector to scroll (leave blank for page):");
+    step = selector ? { type, selector } : { type };
+  }
+  scheduleSteps.push(step);
+  renderScheduleSteps();
+});
+
+renderScheduleSteps();
+
+document.getElementById("createScheduleBtn").onclick = async () => {
+  const statusEl = document.getElementById("scheduleStatus");
+  const profileId = document.getElementById("scheduleProfileId").value.trim();
+  const intervalRaw = document.getElementById("scheduleInterval").value.trim();
+  const label = document.getElementById("scheduleLabel").value.trim();
+
+  if (!profileId) { setStatus(statusEl, "Profile ID is required.", "err"); return; }
+  const intervalMs = Number.parseInt(intervalRaw, 10);
+  if (!intervalRaw || Number.isNaN(intervalMs) || intervalMs < 1000) { setStatus(statusEl, "Interval must be ≥ 1000 ms.", "err"); return; }
+
+  const commands = scheduleSteps.length > 0 ? [...scheduleSteps] : [{ type: "screenshot" }];
+
+  try {
+    setStatus(statusEl, "Creating...", "warn");
+    await request("/schedules", {
+      method: "POST",
+      body: JSON.stringify({ profileId, intervalMs, commands, label: label || undefined })
+    });
+    setStatus(statusEl, "Schedule created.", "ok");
+    document.getElementById("scheduleProfileId").value = "";
+    document.getElementById("scheduleInterval").value = "";
+    document.getElementById("scheduleLabel").value = "";
+    scheduleSteps = [];
+    renderScheduleSteps();
+    await refreshSchedules();
+  } catch (err) {
+    setStatus(statusEl, `Failed: ${err.message ?? err}`, "err");
+  }
+};
+
+document.getElementById("refreshSchedulesBtn").onclick = () => refreshSchedules().catch(() => {});
+
+refreshSchedules().catch(() => {});
+
+// ── Command Audit Log ─────────────────────────────────────────────────────────
+
+const loadAuditLog = async (profileId) => {
+  const container = document.getElementById("auditLogContainer");
+  if (!profileId) {
+    container.innerHTML = `<span style="opacity:0.5;">Enter a profile ID and click Load.</span>`;
+    return;
+  }
+  try {
+    container.textContent = "Loading…";
+    const data = await request(`/profiles/${encodeURIComponent(profileId)}/command-log?limit=100`);
+    const entries = data.entries ?? [];
+    if (entries.length === 0) {
+      container.innerHTML = `<span style="opacity:0.5;">No commands logged yet for this profile.</span>`;
+      return;
+    }
+    container.innerHTML = entries.slice().reverse().map((e) => {
+      const ts = e.ts ? new Date(e.ts).toLocaleTimeString() : "?";
+      const cmdNames = escapeHtml((e.commands ?? []).map((c) => c.type).join(", "));
+      const ok = (e.results ?? []).every((r) => r.ok);
+      return `<div style="padding:4px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:flex-start;">
+        <span style="color:${ok ? "var(--success)" : "var(--status-err)"}; font-size:0.75rem; flex-shrink:0;">${ok ? "&#10003;" : "&#10007;"}</span>
+        <div style="flex:1;min-width:0;">
+          <span style="color:var(--text-main);">${cmdNames || "(no commands)"}</span>
+          <span style="float:right;color:var(--text-muted);font-size:0.72rem;">${escapeHtml(ts)} &bull; ${escapeHtml(String(e.durationMs ?? "?"))}ms</span>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    container.innerHTML = `<span style="color:var(--status-err);">Failed: ${err.message ?? err}</span>`;
+  }
+};
+
+document.getElementById("loadAuditLogBtn").onclick = () => {
+  const profileId = document.getElementById("auditProfileId").value.trim();
+  loadAuditLog(profileId).catch(() => {});
+};
+
+document.getElementById("exportAuditLogBtn").onclick = async () => {
+  const profileId = document.getElementById("auditProfileId").value.trim();
+  const container = document.getElementById("auditLogContainer");
+  if (!profileId) {
+    container.innerHTML = `<span style="color:var(--status-err);">Enter a profile ID first.</span>`;
+    return;
+  }
+  try {
+    const data = await request(`/profiles/${encodeURIComponent(profileId)}/command-log?limit=1000`);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `audit-log-${profileId.slice(0, 8)}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    container.innerHTML = `<span style="color:var(--status-err);">Export failed: ${escapeHtml(String(err.message ?? err))}</span>`;
+  }
+};

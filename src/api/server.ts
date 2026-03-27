@@ -3,7 +3,7 @@ import cors from "@fastify/cors";
 import staticPlugin from "@fastify/static";
 import os from "node:os";
 import path from "node:path";
-import { unlink } from "node:fs/promises";
+import { unlink, readFile } from "node:fs/promises";
 import { resolve4 as dnsResolve4 } from "node:dns/promises";
 import { z, ZodError } from "zod";
 import type { FastifyReply } from "fastify";
@@ -190,6 +190,21 @@ export const buildServer = ({
     timestamp: new Date().toISOString()
   }));
 
+  // ── Viewport sync ──────────────────────────────────────────────────────────
+  const ViewportSchema = z.object({
+    profileId: z.string().uuid(),
+    width: z.number().int().min(100).max(7680),
+    height: z.number().int().min(100).max(4320)
+  });
+  app.post("/viewport", async (request, reply) => {
+    const { profileId, width, height } = ViewportSchema.parse(request.body ?? {});
+    if (!runtime.isRunning(profileId)) {
+      return reply.code(409).send({ error: "Profile is not running." });
+    }
+    await runtime.setViewportSize(profileId, width, height);
+    return reply.send({ ok: true, profileId, width, height });
+  });
+
   app.post("/proxy/parse", async (request, reply) => {
     const payload = ProxyParseRequestSchema.parse(request.body ?? {});
     const proxy = parseProxyString(payload.proxyInput);
@@ -242,6 +257,26 @@ export const buildServer = ({
     const payload = CreateProfileInputSchema.parse(request.body);
     const profile = await store.create(payload);
     await reply.code(201).send({ profile: redactProfileForResponse(profile) });
+  });
+
+  // ── Profile bulk import ────────────────────────────────────────────────────
+  const BulkImportSchema = z.object({
+    profiles: z.array(CreateProfileInputSchema).min(1).max(50)
+  });
+
+  app.post("/profiles/bulk-import", async (request, reply) => {
+    const { profiles: inputs } = BulkImportSchema.parse(request.body);
+    const created: ReturnType<typeof redactProfileForResponse>[] = [];
+    const errors: { name: string; error: string }[] = [];
+    for (const input of inputs) {
+      try {
+        const profile = await store.create(input);
+        created.push(redactProfileForResponse(profile));
+      } catch (err: unknown) {
+        errors.push({ name: input.name, error: String((err as Error)?.message ?? err) });
+      }
+    }
+    return reply.code(201).send({ created, errors, total: inputs.length });
   });
 
   app.get("/backups", async (request, reply) => {
@@ -863,6 +898,26 @@ export const buildServer = ({
       autoDeleteAfterMs: payload.autoDeleteAfterMs,
       deleteAt
     });
+  });
+
+  app.get("/artifacts", async (request, reply) => {
+    const { path: artifactPath } = request.query as { path?: string };
+    if (!artifactPath) {
+      await reply.code(400).send({ error: "path query param is required." });
+      return;
+    }
+    const resolvedPath = resolveArtifactPath(config.artifactsDir, artifactPath);
+    let data: Buffer;
+    try {
+      data = await readFile(resolvedPath);
+    } catch {
+      await reply.code(404).send({ error: "Artifact not found." });
+      return;
+    }
+    const ext = resolvedPath.split(".").pop()?.toLowerCase() ?? "";
+    const mimeMap: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+    const mime = mimeMap[ext] ?? "application/octet-stream";
+    await reply.header("content-type", mime).send(data);
   });
 
   app.post("/artifacts/delete", async (request, reply) => {

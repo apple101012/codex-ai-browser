@@ -11,5 +11,6 @@ export interface BrowserRuntime {
   execute(profile: ProfileRecord, command: BrowserCommand): Promise<CommandExecutionResult>;
   getCookies(profileId: string, urls?: string[]): Promise<Cookie[]>;
   addCookies(profileId: string, cookies: Cookie[]): Promise<void>;
+  setViewportSize(profileId: string, width: number, height: number): Promise<void>;
 }
 

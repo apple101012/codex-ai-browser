@@ -49,5 +49,9 @@ export class InMemoryRuntime implements BrowserRuntime {
   async addCookies(_profileId: string, _cookies: Cookie[]): Promise<void> {
     // no-op in mock runtime
   }
+
+  async setViewportSize(_profileId: string, _width: number, _height: number): Promise<void> {
+    // no-op in mock runtime
+  }
 }
 

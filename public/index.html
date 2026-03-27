@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AI Browser Control</title>
+    <title>Codex AI Browser Control</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/app/styles.css" />
   </head>
@@ -50,6 +50,25 @@
           
           <!-- Column 1 (Left) -->
           <div class="grid-col side-col">
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.05s;">
+              <div class="panel-header">
+                <h2>Profile Templates</h2>
+              </div>
+              <div class="panel-body stack">
+                <div style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 4px;">Export all profiles to JSON or bulk-import profiles from a file.</div>
+                <div class="action-row">
+                  <button id="exportProfilesBtn" class="btn-secondary full-width">Export All Profiles</button>
+                </div>
+                <div class="action-row">
+                  <label class="btn-secondary full-width" style="cursor:pointer; text-align:center;">
+                    Import Profiles (JSON)
+                    <input id="importProfilesFile" type="file" accept=".json,application/json" style="display:none;" />
+                  </label>
+                </div>
+                <p id="templateStatus" class="status-text mt-2"></p>
+              </div>
+            </section>
+
             <section class="panel glass-panel fade-in" style="animation-delay: 0.1s;">
               <div class="panel-header">
                 <h2>Connection</h2>
@@ -166,6 +185,7 @@
               <div class="panel-header space-between">
                 <h2>Running Profiles</h2>
                 <div class="action-row m-0" style="align-items: center; gap: 8px;">
+                  <input id="profileSearchInput" type="text" placeholder="Filter by name..." style="padding: 4px 10px; font-size: 0.8rem; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; color: var(--text-main); width: 150px;" />
                   <span style="font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 4px;">
                     <span style="display: inline-block; width: 6px; height: 6px; background: var(--success); border-radius: 50%; animation: pulse 2s infinite;"></span>
                     Auto-refresh: <span id="autoRefreshIndicator">starting...</span>
@@ -195,14 +215,89 @@
                 </div>
               </div>
             </section>
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.35s;">
+              <div class="panel-header space-between">
+                <h2>Scheduled Tasks</h2>
+                <button id="refreshSchedulesBtn" class="btn-icon" title="Refresh">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                </button>
+              </div>
+              <div class="panel-body stack">
+                <div class="form-grid" style="grid-template-columns: 1fr 1fr;">
+                  <div class="input-group">
+                    <label>Profile ID</label>
+                    <input id="scheduleProfileId" type="text" placeholder="Profile UUID" />
+                  </div>
+                  <div class="input-group">
+                    <label>Interval (ms)</label>
+                    <input id="scheduleInterval" type="number" min="1000" placeholder="e.g. 60000" />
+                  </div>
+                  <div class="input-group" style="grid-column: 1 / -1;">
+                    <label>Command Steps</label>
+                    <div id="scheduleStepsContainer" style="display:flex;flex-direction:column;gap:6px;"></div>
+                    <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
+                      <select id="scheduleStepType" class="custom-select" style="flex:1;">
+                        <option value="screenshot">Screenshot</option>
+                        <option value="navigate">Navigate to URL</option>
+                        <option value="click">Click selector</option>
+                        <option value="type">Type text</option>
+                        <option value="extractText">Extract text</option>
+                        <option value="scroll">Scroll</option>
+                      </select>
+                      <button id="scheduleAddStepBtn" class="btn-secondary btn-sm" type="button">+ Add Step</button>
+                    </div>
+                  </div>
+                  <div class="input-group">
+                    <label>Label (optional)</label>
+                    <input id="scheduleLabel" type="text" placeholder="My schedule" />
+                  </div>
+                  <div class="input-group" style="display:flex; align-items:flex-end;">
+                    <button id="createScheduleBtn" class="btn-primary full-width">Add Schedule</button>
+                  </div>
+                </div>
+                <p id="scheduleStatus" class="status-text"></p>
+                <div id="schedulesList" style="margin-top: 8px;"></div>
+              </div>
+            </section>
+
+            <section class="panel glass-panel fade-in" style="animation-delay: 0.45s;">
+              <div class="panel-header space-between">
+                <h2>Command Audit Log</h2>
+                <div class="action-row m-0" style="gap: 8px; align-items: center;">
+                  <input id="auditProfileId" type="text" placeholder="Profile UUID" style="width: 220px; padding: 4px 8px; font-size: 0.8rem; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 6px; color: var(--text-main);" />
+                  <button id="loadAuditLogBtn" class="btn-secondary btn-sm">Load</button>
+                  <button id="exportAuditLogBtn" class="btn-secondary btn-sm">Export</button>
+                </div>
+              </div>
+              <div class="panel-body p-0">
+                <div id="auditLogContainer" style="max-height: 320px; overflow-y: auto; padding: 12px; font-family: monospace; font-size: 0.78rem; color: var(--text-muted);">
+                  <span style="opacity: 0.5;">Enter a profile ID and click Load to view command history.</span>
+                </div>
+              </div>
+            </section>
+
           </div>
-          
+
         </div>
       </main>
     </div>
 
     <!-- Hidden original elements that might be expected by JS, mapping IDs if they don't cleanly fit -->
     <!-- (They are all mapped above directly to maintain JS compatibility) -->
+
+    <!-- Screenshot Preview Modal (Feature 1) -->
+    <div id="screenshotModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;align-items:center;justify-content:center;">
+      <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:90vw;max-height:90vh;display:flex;flex-direction:column;gap:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 id="screenshotModalTitle" style="margin:0;font-size:1rem;"></h3>
+          <button id="screenshotModalClose" class="btn-icon" title="Close">&times;</button>
+        </div>
+        <div style="overflow:auto;max-height:75vh;">
+          <img id="screenshotModalImg" src="" alt="Browser screenshot" style="max-width:100%;border-radius:6px;display:block;" />
+        </div>
+        <p id="screenshotModalStatus" class="status-text" style="margin:0;"></p>
+      </div>
+    </div>
 
     <script type="module" src="/app/app.js"></script>
   </body>
