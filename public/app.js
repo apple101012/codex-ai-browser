@@ -268,30 +268,30 @@ const refreshProfiles = async () => {
         <div style="display: flex; align-items: flex-start;">
           <span class="profile-color-dot" style="background-color: ${color}; color: ${color}; margin-top: 6px;"></span>
           <div>
-            <div style="font-weight: 600; font-size: 0.95rem;">${profile.name}</div>
-            <div style="font-size: 0.75rem; color: var(--primary); margin-top: 4px; user-select: all; cursor: pointer; font-family: monospace; word-break: break-all;" title="Double click to select entirely">${profile.id}</div>
-            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; user-select: all; cursor: pointer; font-family: monospace; word-break: break-all;" title="Browser profile directory">${profile.dataDir ?? "No directory recorded"}</div>
+            <div style="font-weight: 600; font-size: 0.95rem;">${escapeHtml(profile.name)}</div>
+            <div style="font-size: 0.75rem; color: var(--primary); margin-top: 4px; user-select: all; cursor: pointer; font-family: monospace; word-break: break-all;" title="Double click to select entirely">${escapeHtml(profile.id)}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; user-select: all; cursor: pointer; font-family: monospace; word-break: break-all;" title="Browser profile directory">${escapeHtml(profile.dataDir ?? "No directory recorded")}</div>
           </div>
         </div>
       </td>
       <td>
-        <div style="font-weight: 500;">${profile.engine}</div>
+        <div style="font-weight: 500;">${escapeHtml(profile.engine)}</div>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${isVisible ? "Visible UI" : "Hidden UI"}</div>
-        <div id="proxy-display-${profile.id}" style="margin-top: 6px;">
+        <div id="proxy-display-${escapeHtml(profile.id)}" style="margin-top: 6px;">
           ${proxyHasValue
-            ? `<span style="font-size: 0.75rem; color: var(--primary); font-family: monospace;">&#x1F512; ${proxySummary}</span>`
+            ? `<span style="font-size: 0.75rem; color: var(--primary); font-family: monospace;">&#x1F512; ${escapeHtml(proxySummary)}</span>`
             : `<span style="font-size: 0.75rem; color: var(--text-muted);">No proxy</span>`}
         </div>
-        <div id="proxy-edit-${profile.id}" style="display: none; margin-top: 6px;">
+        <div id="proxy-edit-${escapeHtml(profile.id)}" style="display: none; margin-top: 6px;">
           <input
-            id="proxy-input-${profile.id}"
+            id="proxy-input-${escapeHtml(profile.id)}"
             type="text"
             placeholder="host:port:user:pass"
             style="width: 100%; padding: 5px 8px; font-size: 0.78rem; font-family: monospace; background: var(--bg-dark); border: 1px solid var(--border-highlight); border-radius: 6px; color: var(--text-main);"
           />
           <div style="display: flex; gap: 4px; margin-top: 5px;">
-            <button id="proxy-save-${profile.id}" class="btn-success btn-sm" style="font-size: 0.72rem; padding: 3px 10px;">Save</button>
-            <button id="proxy-cancel-${profile.id}" class="btn-secondary btn-sm" style="font-size: 0.72rem; padding: 3px 10px;">Cancel</button>
+            <button id="proxy-save-${escapeHtml(profile.id)}" class="btn-success btn-sm" style="font-size: 0.72rem; padding: 3px 10px;">Save</button>
+            <button id="proxy-cancel-${escapeHtml(profile.id)}" class="btn-secondary btn-sm" style="font-size: 0.72rem; padding: 3px 10px;">Cancel</button>
           </div>
         </div>
       </td>
@@ -608,7 +608,11 @@ screenshotModal?.addEventListener("click", (e) => {
   if (e.target === screenshotModal) closeScreenshotModal();
 });
 
+let _screenshotCapturing = false;
+
 const openScreenshotPreview = async (profileId, profileName) => {
+  if (_screenshotCapturing) return;
+  _screenshotCapturing = true;
   screenshotModal.style.display = "flex";
   screenshotModalImg.src = "";
   screenshotModalTitle.textContent = `Screenshot — ${profileName}`;
@@ -641,6 +645,8 @@ const openScreenshotPreview = async (profileId, profileName) => {
     setStatus(screenshotModalStatus, "Screenshot ready.", "ok");
   } catch (err) {
     setStatus(screenshotModalStatus, `Failed: ${err.message ?? err}`, "err");
+  } finally {
+    _screenshotCapturing = false;
   }
 };
 
@@ -1053,7 +1059,7 @@ document.getElementById("scheduleAddStepBtn")?.addEventListener("click", () => {
 
 renderScheduleSteps();
 
-document.getElementById("createScheduleBtn").onclick = async () => {
+document.getElementById("createScheduleBtn")?.addEventListener("click", async () => {
   const statusEl = document.getElementById("scheduleStatus");
   const profileId = document.getElementById("scheduleProfileId").value.trim();
   const intervalRaw = document.getElementById("scheduleInterval").value.trim();
@@ -1081,7 +1087,7 @@ document.getElementById("createScheduleBtn").onclick = async () => {
   } catch (err) {
     setStatus(statusEl, `Failed: ${err.message ?? err}`, "err");
   }
-};
+});
 
 document.getElementById("refreshSchedulesBtn").onclick = () => refreshSchedules().catch(() => {});
 
