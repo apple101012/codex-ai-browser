@@ -27,6 +27,9 @@ export interface AppConfig {
   apiToken?: string;
   defaultHeadless: boolean;
   allowEvaluate: boolean;
+  enableAcceleratorExtension: boolean;
+  acceleratorExtensionDir: string;
+  enableSnapshotCache: boolean;
 }
 
 export const loadConfig = (): AppConfig => {
@@ -37,6 +40,10 @@ export const loadConfig = (): AppConfig => {
   const artifactsDir = path.join(dataDir, "artifacts");
   const backupDir = path.resolve(process.cwd(), process.env.BACKUP_DIR ?? path.join(dataDir, "backups"));
   const publicDir = path.resolve(process.cwd(), process.env.PUBLIC_DIR ?? "public");
+  const acceleratorExtensionDir = path.resolve(
+    process.cwd(),
+    process.env.ACCELERATOR_EXTENSION_DIR ?? "extension/ai-browser-accelerator"
+  );
 
   return {
     host,
@@ -48,6 +55,9 @@ export const loadConfig = (): AppConfig => {
     publicDir,
     apiToken: process.env.API_TOKEN?.trim() || undefined,
     defaultHeadless: parseBoolean(process.env.DEFAULT_HEADLESS, true),
-    allowEvaluate: parseBoolean(process.env.ALLOW_EVALUATE, false)
+    allowEvaluate: parseBoolean(process.env.ALLOW_EVALUATE, false),
+    enableAcceleratorExtension: parseBoolean(process.env.ENABLE_ACCELERATOR_EXTENSION, false),
+    acceleratorExtensionDir,
+    enableSnapshotCache: parseBoolean(process.env.ENABLE_SNAPSHOT_CACHE, false)
   };
 };

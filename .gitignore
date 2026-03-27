@@ -19,6 +19,8 @@ tmp/
 tmp-*.mjs
 fresh2-*.mjs
 artifacts/
+snap_resp.json
+screenshot.png
 profiles/
 playwright-profiles/
 *.sqlite

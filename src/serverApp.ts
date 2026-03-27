@@ -6,6 +6,9 @@ import { ProfileStore } from "./storage/profileStore.js";
 import { ProfileBackupStore } from "./storage/profileBackupStore.js";
 import { PlaywrightRuntime } from "./browser/playwrightRuntime.js";
 import { ActiveControlStore } from "./control/activeControlStore.js";
+import { CommandLogStore } from "./storage/commandLogStore.js";
+import { ScheduleStore } from "./storage/scheduleStore.js";
+import { ScheduleRunner } from "./scheduler/scheduleRunner.js";
 
 export interface StartServerOptions {
   host?: string;
@@ -45,12 +48,25 @@ export const startServer = async (options: StartServerOptions = {}): Promise<Run
     artifactsDir: config.artifactsDir,
     defaultHeadless: config.defaultHeadless,
     allowEvaluate: config.allowEvaluate,
-    profileStore: store
+    profileStore: store,
+    enableAcceleratorExtension: config.enableAcceleratorExtension,
+    acceleratorExtensionDir: config.acceleratorExtensionDir,
+    enableSnapshotCache: config.enableSnapshotCache
   });
   const controlStore = new ActiveControlStore();
-  const app = buildServer({ config, store, runtime, controlStore, backupStore });
+
+  const schedulesDir = path.join(config.dataDir, "schedules");
+  await mkdir(schedulesDir, { recursive: true });
+  const commandLogStore = new CommandLogStore();
+  const scheduleStore = new ScheduleStore(schedulesDir);
+  await scheduleStore.init();
+  const scheduleRunner = new ScheduleRunner(scheduleStore, store, runtime, commandLogStore);
+  await scheduleRunner.bootAll();
+
+  const app = buildServer({ config, store, runtime, controlStore, backupStore, commandLogStore, scheduleStore, scheduleRunner });
 
   const close = async (): Promise<void> => {
+    scheduleRunner.stopAll();
     await runtime.stopAll();
     await app.close();
   };

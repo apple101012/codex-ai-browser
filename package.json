@@ -8,6 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "start:api": "tsx src/index.ts",
+    "cli": "tsx src/browserCli.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "mcp": "tsx src/mcp.ts",
@@ -46,6 +47,7 @@
     "electron": "^41.0.2",
     "electron-builder": "^26.8.1",
     "eslint": "^10.0.3",
+    "sharp": "^0.34.5",
     "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
@@ -54,8 +56,8 @@
   },
   "type": "module",
   "build": {
-    "appId": "com.apple101012.codexaibrowser",
-    "productName": "Codex AI Browser",
+    "appId": "com.apple101012.aibrowser",
+    "productName": "AI Browser",
     "directories": {
       "output": "release"
     },
@@ -69,6 +71,7 @@
       "dist/**"
     ],
     "win": {
+      "icon": "electron/app-icon.ico",
       "target": [
         {
           "target": "portable",

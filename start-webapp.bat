@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-title Codex AI Browser - Web App Server
+title AI Browser - Web App Server
 cd /d "%~dp0"
 
 where npm >nul 2>&1
@@ -12,7 +12,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo Starting Codex AI Browser web app server...
+echo Starting AI Browser web app server...
 echo Keep this window open while using http://127.0.0.1:4321/app
 echo.
 

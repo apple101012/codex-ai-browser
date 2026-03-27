@@ -1,5 +1,6 @@
 import type { BrowserCommand, CommandExecutionResult } from "../domain/commands.js";
 import type { ProfileRecord } from "../domain/profile.js";
+import type { Cookie } from "playwright";
 
 export interface BrowserRuntime {
   start(profile: ProfileRecord): Promise<void>;
@@ -8,5 +9,7 @@ export interface BrowserRuntime {
   isRunning(profileId: string): boolean;
   listRunningIds(): string[];
   execute(profile: ProfileRecord, command: BrowserCommand): Promise<CommandExecutionResult>;
+  getCookies(profileId: string, urls?: string[]): Promise<Cookie[]>;
+  addCookies(profileId: string, cookies: Cookie[]): Promise<void>;
 }
 

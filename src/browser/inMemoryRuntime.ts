@@ -1,6 +1,7 @@
 import type { BrowserRuntime } from "./runtime.js";
 import type { BrowserCommand, CommandExecutionResult } from "../domain/commands.js";
 import type { ProfileRecord } from "../domain/profile.js";
+import type { Cookie } from "playwright";
 
 export class InMemoryRuntime implements BrowserRuntime {
   private readonly runningProfiles = new Set<string>();
@@ -39,6 +40,14 @@ export class InMemoryRuntime implements BrowserRuntime {
         command
       }
     };
+  }
+
+  async getCookies(_profileId: string, _urls?: string[]): Promise<Cookie[]> {
+    return [];
+  }
+
+  async addCookies(_profileId: string, _cookies: Cookie[]): Promise<void> {
+    // no-op in mock runtime
   }
 }
 

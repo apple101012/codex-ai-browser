@@ -156,6 +156,74 @@ export class PlaywrightRuntime implements BrowserRuntime {
     await mkdir(this.artifactsDir, { recursive: true });
 
     const context = await this.launchContext(profile);
+    await context.addInitScript(() => {
+      // Hide webdriver flag — return false (not undefined) to match real Chrome's property
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      // Ensure window.chrome exists with the same shape as real Chrome.
+      // Always assign missing properties even if chrome was already partially set.
+      if (!(window as any).chrome) (window as any).chrome = {};
+      const _chrome: any = (window as any).chrome;
+      if (!_chrome.runtime)   _chrome.runtime   = {};
+      if (!_chrome.loadTimes) _chrome.loadTimes  = () => ({});
+      if (!_chrome.csi)       _chrome.csi        = () => ({});
+      if (!_chrome.app)       _chrome.app        = {};
+      if (!_chrome.webstore)  _chrome.webstore   = {};
+      // Fix plugins to not appear empty — build realistic PDF-viewer plugin entries
+      // matching the set Chrome 120+ exposes. Google checks plugin names exist.
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+          const makeMimeType = (type: string, suffixes: string, description: string, plugin: any) => {
+            let m: any;
+            try { m = Object.create(MimeType.prototype); } catch { m = {}; }
+            Object.defineProperty(m, 'type',        { value: type,        enumerable: true });
+            Object.defineProperty(m, 'suffixes',    { value: suffixes,    enumerable: true });
+            Object.defineProperty(m, 'description', { value: description, enumerable: true });
+            Object.defineProperty(m, 'enabledPlugin', { value: plugin,   enumerable: true });
+            return m;
+          };
+          const makePlugin = (name: string, filename: string, description: string) => {
+            let p: any;
+            try { p = Object.create(Plugin.prototype); } catch { p = {}; }
+            Object.defineProperty(p, 'name',        { value: name,        enumerable: true });
+            Object.defineProperty(p, 'filename',    { value: filename,    enumerable: true });
+            Object.defineProperty(p, 'description', { value: description, enumerable: true });
+            const mt = makeMimeType('application/pdf', 'pdf', 'Portable Document Format', p);
+            const mimeArr: any = [mt];
+            mimeArr.item = (n: number) => mimeArr[n] ?? null;
+            mimeArr.namedItem = (n: string) => mimeArr.find((m: any) => m.type === n) ?? null;
+            try { Object.setPrototypeOf(mimeArr, MimeTypeArray.prototype); } catch {}
+            Object.defineProperty(p, 'length', { value: 1, enumerable: true });
+            p[0] = mt;
+            p.item = (n: number) => p[n] ?? null;
+            p.namedItem = (n: string) => {
+              for (let i = 0; i < (p.length as number); i++) { if (p[i]?.type === n) return p[i]; }
+              return null;
+            };
+            return p;
+          };
+          const arr: any = [
+            makePlugin('PDF Viewer',                'internal-pdf-viewer', 'Portable Document Format'),
+            makePlugin('Chrome PDF Viewer',         'internal-pdf-viewer', 'Portable Document Format'),
+            makePlugin('Chromium PDF Viewer',       'internal-pdf-viewer', 'Portable Document Format'),
+            makePlugin('Microsoft Edge PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'),
+            makePlugin('WebKit built-in PDF',       'internal-pdf-viewer', 'Portable Document Format'),
+          ];
+          try { Object.setPrototypeOf(arr, PluginArray.prototype); } catch {}
+          arr.item      = (n: number) => arr[n] ?? null;
+          arr.namedItem = (n: string) => arr.find((p: any) => p.name === n) ?? null;
+          arr.refresh   = () => {};
+          return arr;
+        }
+      });
+      // Fix languages
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      // Fix permissions
+      const origQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+      (window.navigator.permissions as any).query = (params: any) =>
+        params.name === 'notifications'
+          ? Promise.resolve({ state: (Notification as any).permission } as PermissionStatus)
+          : origQuery(params);
+    });
     const initialPage = context.pages().find((page) => !page.isClosed()) ?? (await context.newPage());
     const session: SessionState = {
       profileId: profile.id,
@@ -221,6 +289,18 @@ export class PlaywrightRuntime implements BrowserRuntime {
     return [...this.sessions.entries()]
       .filter(([, session]) => !session.closed)
       .map(([profileId]) => profileId);
+  }
+
+  async getCookies(profileId: string, urls?: string[]): Promise<import("playwright").Cookie[]> {
+    const session = this.sessions.get(profileId);
+    if (!session || session.closed) throw new Error(`Profile ${profileId} is not running.`);
+    return session.context.cookies(urls);
+  }
+
+  async addCookies(profileId: string, cookies: import("playwright").Cookie[]): Promise<void> {
+    const session = this.sessions.get(profileId);
+    if (!session || session.closed) throw new Error(`Profile ${profileId} is not running.`);
+    await session.context.addCookies(cookies);
   }
 
   async execute(profile: ProfileRecord, command: BrowserCommand): Promise<CommandExecutionResult> {
@@ -298,8 +378,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
       }
       default: {
         const page =
-          command.type === "screenshot" && command.tabIndex !== undefined
-            ? this.getPageByIndex(session, command.tabIndex)
+          (command as any).tabIndex !== undefined
+            ? this.getPageByIndex(session, (command as any).tabIndex)
             : this.getActivePage(session);
         return await this.executePageCommand(profile, command as PageCommand, page);
       }
@@ -453,6 +533,11 @@ export class PlaywrightRuntime implements BrowserRuntime {
             stateAfter
           }
         };
+      }
+      case "scroll": {
+        await page.mouse.move(command.x, command.y);
+        await page.mouse.wheel(command.deltaX ?? 0, command.deltaY ?? 300);
+        return { type: command.type, ok: true, data: { x: command.x, y: command.y, deltaX: command.deltaX ?? 0, deltaY: command.deltaY ?? 300 } };
       }
       case "clickByText": {
         const requestedOccurrence = command.occurrence;
@@ -1943,9 +2028,20 @@ export class PlaywrightRuntime implements BrowserRuntime {
     const isFirefox = profile.engine === "firefox";
     const extensionArgs = await this.resolveAcceleratorExtensionArgs(profile);
     
+    // Apply anti-detection to all Chromium-based engines, not just channel (Chrome/Edge)
+    const isChromium = !isFirefox;
+    const isHeadless = profile.settings.headless ?? this.defaultHeadless;
+    // When running headless without a custom UA, Playwright defaults to "HeadlessChrome/..."
+    // which Google reliably detects and blocks. Override with a real Chrome UA.
+    const effectiveUserAgent = profile.settings.userAgent ??
+      (isChromium && isHeadless
+        ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+        : undefined);
     const launchOptions = {
-      headless: profile.settings.headless ?? this.defaultHeadless,
-      chromiumSandbox: !isFirefox ? true : undefined,
+      headless: isHeadless,
+      // Disable sandbox in headless mode — sandbox requires user namespaces which
+      // are unavailable in most VPS/container environments.
+      chromiumSandbox: isChromium && !isHeadless,
       proxy: profile.settings.proxy
         ? {
             server: profile.settings.proxy.server,
@@ -1953,10 +2049,20 @@ export class PlaywrightRuntime implements BrowserRuntime {
             password: profile.settings.proxy.password
           }
         : undefined,
-      userAgent: profile.settings.userAgent,
+      userAgent: effectiveUserAgent,
       channel,
-      ignoreDefaultArgs: channel ? ["--enable-automation"] : undefined,
-      args: extensionArgs,
+      ignoreDefaultArgs: isChromium ? ["--enable-automation"] : undefined,
+      args: [
+        ...(extensionArgs ?? []),
+        ...(isChromium ? [
+          "--disable-blink-features=AutomationControlled",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--disable-infobars",
+          "--password-store=basic",
+          "--use-mock-keychain"
+        ] : [])
+      ],
       // Firefox-specific preferences to enable keyboard shortcuts in automation mode
       // Note: These preferences allow MANUAL keyboard shortcuts by the user,
       // but programmatic shortcuts via page.keyboard.press() may still be limited

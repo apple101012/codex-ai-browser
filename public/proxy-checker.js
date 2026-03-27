@@ -21,6 +21,8 @@ const request = async (path, init = {}) => {
 };
 
 
+const escHtml = (str) => String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
 const maskProxy = (proxyStr) => {
   try {
     const p = parseProxyInput(proxyStr);
@@ -116,27 +118,29 @@ const renderRow = (row, idx) => {
     statusHtml = `<span class="status-err-text">✗ Error</span>`;
   }
 
-  const ipHtml = row.ip ? `<span style="font-family: monospace;">${row.ip}</span>` : `<span class="status-pending">—</span>`;
+  const ipHtml = row.ip ? `<span style="font-family: monospace;">${escHtml(row.ip)}</span>` : `<span class="status-pending">—</span>`;
 
   const geoHtml = row.geo
-    ? `<div>${[row.geo.city, row.geo.region, row.geo.country].filter(Boolean).join(", ") || "—"}</div>`
+    ? `<div>${[row.geo.city, row.geo.region, row.geo.country].filter(Boolean).map(escHtml).join(", ") || "—"}</div>`
     : `<span class="status-pending">—</span>`;
 
   const ispHtml = row.geo
-    ? `<div style="color: var(--text-muted);">${row.geo.isp || row.geo.org || "—"}</div>`
+    ? `<div style="color: var(--text-muted);">${escHtml(row.geo.isp || row.geo.org || "—")}</div>`
     : `<span class="status-pending">—</span>`;
 
   let scamalyticsHtml = `<span class="status-pending">—</span>`;
   if (row.scamalytics) {
     if (row.scamalytics.error) {
-      scamalyticsHtml = `<a href="https://scamalytics.com/ip/${row.ip ?? ''}" target="_blank" style="color: var(--text-muted); font-size: 0.75rem;">Check manually ↗</a>`;
+      scamalyticsHtml = `<a href="https://proxycheck.io/v2/${row.ip ?? ''}" target="_blank" style="color: var(--text-muted); font-size: 0.75rem;">Check manually ↗</a>`;
     } else {
       const sc = row.scamalytics;
       const cls = scoreClass(sc.score);
-      const label = sc.risk ? sc.risk.charAt(0).toUpperCase() + sc.risk.slice(1) : (sc.score !== null ? `Score ${sc.score}` : "—");
+      const riskLabel = sc.risk ? sc.risk.charAt(0).toUpperCase() + sc.risk.slice(1) : (sc.score !== null ? `Score ${sc.score}` : "—");
+      const typeTag = sc.type ? ` <span style="font-size:0.7rem;opacity:0.75;">${sc.type}</span>` : "";
+      const pillText = `${sc.score !== null ? sc.score + " · " : ""}${riskLabel}`;
       scamalyticsHtml = sc.url
-        ? `<a href="${sc.url}" target="_blank" style="text-decoration: none;"><span class="score-pill ${cls}">${sc.score !== null ? sc.score + " · " : ""}${label}</span></a>`
-        : `<span class="score-pill ${cls}">${label}</span>`;
+        ? `<a href="${sc.url}" target="_blank" style="text-decoration: none;"><span class="score-pill ${cls}">${pillText}</span></a>${typeTag}`
+        : `<span class="score-pill ${cls}">${pillText}</span>${typeTag}`;
     }
   }
 
@@ -162,7 +166,7 @@ const renderRow = (row, idx) => {
 
   tr.innerHTML = `
     <td style="color: var(--text-muted);">${idx + 1}</td>
-    <td><span style="font-family: monospace; font-size: 0.8rem;">${maskProxy(row.raw)}</span></td>
+    <td><span style="font-family: monospace; font-size: 0.8rem;">${escHtml(maskProxy(row.raw))}</span></td>
     <td>${statusHtml}</td>
     <td>${ipHtml}</td>
     <td>${geoHtml}</td>
@@ -293,7 +297,7 @@ els.checkAllBtn.addEventListener("click", async () => {
   for (let i = 0; i < rows.length; i++) {
     const tr = document.createElement("tr");
     tr.id = `proxy-row-${i}`;
-    tr.innerHTML = `<td colspan="9" style="color: var(--text-muted); padding: 10px 12px;">${i + 1}. ${maskProxy(rows[i].raw)} — pending</td>`;
+    tr.innerHTML = `<td colspan="9" style="color: var(--text-muted); padding: 10px 12px;">${i + 1}. ${escHtml(maskProxy(rows[i].raw))} — pending</td>`;
     els.resultsBody.appendChild(tr);
   }
 
@@ -366,7 +370,7 @@ els.hideFailedToggle?.addEventListener("change", () => {
 });
 
 els.exportCsvBtn.addEventListener("click", () => {
-  const headers = ["#", "Proxy (masked)", "Reachable", "IP", "Country", "Region", "City", "ISP", "Scamalytics Score", "Scamalytics Risk", "Spamhaus Listed", "Spamhaus Codes"];
+  const headers = ["#", "Proxy (masked)", "Reachable", "IP", "Country", "Region", "City", "ISP", "Fraud Score", "Risk Level", "Proxy Type", "Spamhaus Listed", "Spamhaus Codes"];
   const csvRows = rows.map((r, i) => [
     i + 1,
     maskProxy(r.raw),
@@ -378,6 +382,7 @@ els.exportCsvBtn.addEventListener("click", () => {
     r.geo?.isp ?? r.geo?.org ?? "",
     r.scamalytics?.score ?? "",
     r.scamalytics?.risk ?? "",
+    r.scamalytics?.type ?? "",
     r.spamhaus?.listed === true ? "yes" : r.spamhaus?.listed === false ? "no" : "",
     r.spamhaus?.codes?.join(";") ?? ""
   ].map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","));

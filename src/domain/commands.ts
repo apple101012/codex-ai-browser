@@ -3,14 +3,16 @@ import { z } from "zod";
 export const NavigateCommandSchema = z.object({
   type: z.literal("navigate"),
   url: z.string().url(),
-  waitUntil: z.enum(["commit", "domcontentloaded", "load", "networkidle"]).optional()
+  waitUntil: z.enum(["commit", "domcontentloaded", "load", "networkidle"]).optional(),
+  tabIndex: z.number().int().min(0).optional()
 });
 
 export const ClickCommandSchema = z.object({
   type: z.literal("click"),
   selector: z.string().min(1),
   timeoutMs: z.number().int().positive().max(120_000).optional(),
-  includeStateAfter: z.boolean().optional()
+  includeStateAfter: z.boolean().optional(),
+  tabIndex: z.number().int().min(0).optional()
 });
 
 const MouseCoordinateSchema = z.number().finite().min(-100_000).max(100_000);
@@ -27,7 +29,8 @@ const MouseContextSchema = z
     origin: MouseOriginSchema.optional(),
     selector: z.string().min(1).max(500).optional(),
     timeoutMs: z.number().int().positive().max(120_000).optional(),
-    includeStateAfter: z.boolean().optional()
+    includeStateAfter: z.boolean().optional(),
+    tabIndex: z.number().int().min(0).optional()
   })
   .refine((value) => value.origin !== "element" || Boolean(value.selector), {
     message: "selector is required when origin is element."
@@ -57,7 +60,8 @@ export const ClickByTextCommandSchema = z.object({
   tag: z.enum(["button", "a", "any"]).optional(),
   exact: z.boolean().optional(),
   timeoutMs: z.number().int().positive().max(120_000).optional(),
-  includeStateAfter: z.boolean().optional()
+  includeStateAfter: z.boolean().optional(),
+  tabIndex: z.number().int().min(0).optional()
 });
 
 export const TypeCommandSchema = z.object({
@@ -65,7 +69,8 @@ export const TypeCommandSchema = z.object({
   selector: z.string().min(1),
   text: z.string(),
   clear: z.boolean().optional(),
-  includeStateAfter: z.boolean().optional()
+  includeStateAfter: z.boolean().optional(),
+  tabIndex: z.number().int().min(0).optional()
 });
 
 export const TypeIntoPromptCommandSchema = z.object({
@@ -99,7 +104,8 @@ export const GetPageStateCommandSchema = z.object({
   includeTextExcerpt: z.boolean().optional(),
   includeControlSummary: z.boolean().optional(),
   maxControls: z.number().int().positive().max(500).optional(),
-  maxTextChars: z.number().int().positive().max(20000).optional()
+  maxTextChars: z.number().int().positive().max(20000).optional(),
+  tabIndex: z.number().int().min(0).optional()
 });
 
 export const WaitForTextCommandSchema = z
@@ -131,7 +137,8 @@ export const WaitForDomStateCommandSchema = z
 
 export const SnapshotCommandSchema = z.object({
   type: z.literal("snapshot"),
-  maxElements: z.number().int().positive().max(500).optional()
+  maxElements: z.number().int().positive().max(500).optional(),
+  tabIndex: z.number().int().min(0).optional()
 });
 
 export const ClickRefCommandSchema = z.object({
@@ -222,6 +229,15 @@ export const GetTabTextCommandSchema = z.object({
   maxChars: z.number().int().positive().max(20000).optional()
 });
 
+export const ScrollCommandSchema = z.object({
+  type: z.literal("scroll"),
+  x: z.number().finite(),
+  y: z.number().finite(),
+  deltaX: z.number().finite().optional(),
+  deltaY: z.number().finite().optional(),
+  tabIndex: z.number().int().min(0).optional()
+});
+
 export const BrowserCommandSchema = z.discriminatedUnion("type", [
   NavigateCommandSchema,
   ClickCommandSchema,
@@ -250,7 +266,8 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   NewTabCommandSchema,
   SelectTabCommandSchema,
   CloseTabCommandSchema,
-  GetTabTextCommandSchema
+  GetTabTextCommandSchema,
+  ScrollCommandSchema
 ]);
 
 export type BrowserCommand = z.infer<typeof BrowserCommandSchema>;

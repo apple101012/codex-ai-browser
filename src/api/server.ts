@@ -23,6 +23,9 @@ import { createPlaywrightProxyChecker, type ProxyCheckResult } from "../proxy/pr
 import { parseProxyString } from "../proxy/proxyParser.js";
 import { ProxyCheckRequestSchema, ProxyParseRequestSchema } from "../proxy/proxySchemas.js";
 import type { ProxyConfigInput } from "../proxy/proxyTypes.js";
+import { CommandLogStore } from "../storage/commandLogStore.js";
+import { ScheduleStore, CreateScheduleInputSchema } from "../storage/scheduleStore.js";
+import { ScheduleRunner } from "../scheduler/scheduleRunner.js";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -31,6 +34,9 @@ export interface AppDependencies {
   controlStore: ActiveControlStore;
   backupStore?: ProfileBackupStore;
   proxyChecker?: ProxyCheckerFn;
+  commandLogStore?: CommandLogStore;
+  scheduleStore?: ScheduleStore;
+  scheduleRunner?: ScheduleRunner;
 }
 
 type ProxyCheckerFn = (
@@ -130,10 +136,18 @@ export const buildServer = ({
   runtime,
   controlStore,
   backupStore: providedBackupStore,
-  proxyChecker: providedProxyChecker
+  proxyChecker: providedProxyChecker,
+  commandLogStore: providedCommandLogStore,
+  scheduleStore: providedScheduleStore,
+  scheduleRunner: providedScheduleRunner
 }: AppDependencies) => {
   const backupStore = providedBackupStore ?? new ProfileBackupStore(config.backupDir ?? path.join(config.dataDir, "backups"));
   const proxyChecker = providedProxyChecker ?? createPlaywrightProxyChecker({ headless: true });
+  const commandLogStore = providedCommandLogStore ?? new CommandLogStore();
+  const scheduleStoreCreatedHere = !providedScheduleStore;
+  const scheduleStore = providedScheduleStore ?? new ScheduleStore(path.join(config.dataDir, "schedules"));
+  const scheduleRunnerCreatedHere = !providedScheduleRunner;
+  const scheduleRunner = providedScheduleRunner ?? new ScheduleRunner(scheduleStore, store, runtime, commandLogStore);
   const app = Fastify({
     logger: true
   });
@@ -146,6 +160,15 @@ export const buildServer = ({
     root: config.publicDir,
     prefix: "/app/"
   });
+
+  // When scheduleStore/runner were created internally (not passed by caller),
+  // initialize them before the server begins handling requests.
+  if (scheduleStoreCreatedHere || scheduleRunnerCreatedHere) {
+    app.addHook("onReady", async () => {
+      if (scheduleStoreCreatedHere) await scheduleStore.init();
+      if (scheduleRunnerCreatedHere) await scheduleRunner.bootAll();
+    });
+  }
 
   app.addHook("preHandler", authHook(config.apiToken));
 
@@ -178,6 +201,10 @@ export const buildServer = ({
 
   app.post("/proxy/check", async (request, reply) => {
     const payload = ProxyCheckRequestSchema.parse(request.body ?? {});
+    try { parseProxyString(payload.proxyInput); } catch (err) {
+      await reply.code(400).send({ error: (err as Error).message ?? "Invalid proxy format." });
+      return;
+    }
     const result = await proxyChecker(payload.proxyInput, {
       testUrl: payload.testUrl,
       timeoutMs: payload.timeoutMs
@@ -187,15 +214,15 @@ export const buildServer = ({
 
   app.post("/proxy/reputation", async (request, reply) => {
     const { ip } = z.object({ ip: z.string().regex(/^(25[0-5]|2[0-4]\d|[01]?\d\d?)(\.(25[0-5]|2[0-4]\d|[01]?\d\d?)){3}$/, "Invalid IPv4 address") }).parse(request.body ?? {});
-    const [geo, scamalytics, spamhaus] = await Promise.allSettled([
+    const [geo, fraudScore, spamhaus] = await Promise.allSettled([
       fetchGeoInfo(ip),
-      fetchScamalyticsInfo(ip),
+      fetchFraudScore(ip),
       checkSpamhaus(ip)
     ]);
     await reply.send({
       ip,
       geo: geo.status === "fulfilled" ? geo.value : { error: String((geo as PromiseRejectedResult).reason?.message ?? "failed") },
-      scamalytics: scamalytics.status === "fulfilled" ? scamalytics.value : { error: String((scamalytics as PromiseRejectedResult).reason?.message ?? "failed") },
+      scamalytics: fraudScore.status === "fulfilled" ? fraudScore.value : { error: String((fraudScore as PromiseRejectedResult).reason?.message ?? "failed") },
       spamhaus: spamhaus.status === "fulfilled" ? spamhaus.value : { error: String((spamhaus as PromiseRejectedResult).reason?.message ?? "failed") }
     });
   });
@@ -534,11 +561,142 @@ export const buildServer = ({
     }
 
     const payload = RunCommandsRequestSchema.parse(request.body);
-    const result = await executeCommandBatch({ profile, payload, runtime });
+    const result = await executeCommandBatch({ profile, payload, runtime, commandLogStore });
     await reply.send({
       profileId: profile.id,
       ...result
     });
+  });
+
+  // ── Command log ────────────────────────────────────────────────────────────
+  const CommandLogQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(1000).default(100) });
+
+  app.get("/profiles/:id/command-log", async (request, reply) => {
+    const profile = await getProfileOr404(request.params, store, reply);
+    if (!profile) return;
+    const query = CommandLogQuerySchema.parse(request.query);
+    const entries = await commandLogStore.readLast(profile.dataDir, query.limit);
+    return reply.send({ profileId: profile.id, entries });
+  });
+
+  // ── Cookie import/export ───────────────────────────────────────────────────
+  const CookiesQuerySchema = z.object({ urls: z.string().optional() });
+  const CookieSchema = z.object({
+    name: z.string(),
+    value: z.string(),
+    domain: z.string().optional(),
+    url: z.string().url().optional(),
+    path: z.string().optional(),
+    expires: z.number().min(-1).optional(),
+    httpOnly: z.boolean().optional(),
+    secure: z.boolean().optional(),
+    sameSite: z.enum(["Strict", "Lax", "None"]).optional()
+  }).refine(c => c.domain !== undefined || c.url !== undefined, {
+    message: "Each cookie must have either 'domain' or 'url'"
+  });
+  const AddCookiesBodySchema = z.object({ cookies: z.array(CookieSchema).min(1) });
+
+  app.get("/profiles/:id/cookies", async (request, reply) => {
+    const profile = await getProfileOr404(request.params, store, reply);
+    if (!profile) return;
+    if (!runtime.isRunning(profile.id)) {
+      return reply.code(409).send({ error: "Profile is not running. Start it first." });
+    }
+    const { urls: rawUrls } = CookiesQuerySchema.parse(request.query);
+    const urls = rawUrls ? rawUrls.split(",").map((u) => decodeURIComponent(u.trim())).filter(Boolean) : undefined;
+    let cookies;
+    try {
+      cookies = await runtime.getCookies(profile.id, urls);
+    } catch (err: any) {
+      return reply.code(422).send({ error: "Failed to read cookies", detail: String(err?.message ?? err) });
+    }
+    return reply.send({ profileId: profile.id, cookies });
+  });
+
+  app.post("/profiles/:id/cookies", async (request, reply) => {
+    const profile = await getProfileOr404(request.params, store, reply);
+    if (!profile) return;
+    if (!runtime.isRunning(profile.id)) {
+      return reply.code(409).send({ error: "Profile is not running. Start it first." });
+    }
+    const { cookies } = AddCookiesBodySchema.parse(request.body);
+    try {
+      await runtime.addCookies(profile.id, cookies as any);
+    } catch (err: any) {
+      return reply.code(422).send({ error: "Failed to add cookies", detail: String(err?.message ?? err) });
+    }
+    return reply.code(200).send({ added: true, count: cookies.length });
+  });
+
+  // ── Scheduled tasks ────────────────────────────────────────────────────────
+  app.post("/schedules", async (request, reply) => {
+    const input = CreateScheduleInputSchema.parse(request.body);
+    // Verify profile exists
+    const profile = await store.get(input.profileId);
+    if (!profile) return reply.code(404).send({ error: "Profile not found." });
+    const schedule = await scheduleStore.create(input);
+    if (schedule.enabled) scheduleRunner.register(schedule.id, schedule.intervalMs);
+    return reply.code(201).send({ schedule });
+  });
+
+  app.get("/schedules", async (_request, reply) => {
+    const schedules = await scheduleStore.list();
+    return reply.send({ schedules });
+  });
+
+  app.get("/schedules/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const schedule = await scheduleStore.get(id);
+    if (!schedule) return reply.code(404).send({ error: "Schedule not found." });
+    return reply.send({ schedule });
+  });
+
+  app.delete("/schedules/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    scheduleRunner.unregister(id);
+    const deleted = await scheduleStore.delete(id);
+    if (!deleted) return reply.code(404).send({ error: "Schedule not found." });
+    return reply.send({ deleted: true });
+  });
+
+  app.post("/schedules/:id/run", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const schedule = await scheduleStore.get(id);
+    if (!schedule) return reply.code(404).send({ error: "Schedule not found." });
+    const wasAlreadyRunning = scheduleRunner.isRunning(id);
+    await scheduleRunner.runSchedule(id);
+    const updated = await scheduleStore.get(id);
+    if (wasAlreadyRunning) {
+      return reply.send({ ran: false, reason: "already_running", schedule: updated });
+    }
+    return reply.send({ ran: true, schedule: updated });
+  });
+
+  const PatchScheduleBodySchema = z.object({
+    enabled: z.boolean().optional(),
+    label: z.string().max(200).nullable().optional()
+  }).refine(b => b.enabled !== undefined || b.label !== undefined, {
+    message: "Provide at least one of 'enabled' or 'label'"
+  });
+
+  app.patch("/schedules/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = PatchScheduleBodySchema.parse(request.body);
+    const schedule = await scheduleStore.get(id);
+    if (!schedule) return reply.code(404).send({ error: "Schedule not found." });
+    if (body.enabled !== undefined) {
+      await scheduleStore.setEnabled(id, body.enabled);
+      if (body.enabled) {
+        scheduleRunner.register(id, schedule.intervalMs);
+      } else {
+        scheduleRunner.unregister(id);
+      }
+    }
+    if (body.label !== undefined) {
+      await scheduleStore.setLabel(id, body.label ?? undefined);
+    }
+    const updated = await scheduleStore.get(id);
+    return reply.send({ schedule: updated });
   });
 
   app.get("/control/state", async () => {
@@ -650,7 +808,7 @@ export const buildServer = ({
     }
 
     const payload = RunCommandsRequestSchema.parse(request.body);
-    const result = await executeCommandBatch({ profile, payload, runtime });
+    const result = await executeCommandBatch({ profile, payload, runtime, commandLogStore });
     await reply.send({
       profileId: profile.id,
       activeProfileId: profile.id,
@@ -798,16 +956,19 @@ const getReconciledControlState = async ({
 const executeCommandBatch = async ({
   profile,
   payload,
-  runtime
+  runtime,
+  commandLogStore
 }: {
   profile: ProfileRecord;
   payload: z.infer<typeof RunCommandsRequestSchema>;
   runtime: BrowserRuntime;
+  commandLogStore?: CommandLogStore;
 }) => {
   if (payload.autoStart && !runtime.isRunning(profile.id)) {
     await runtime.start(profile);
   }
 
+  const startTime = Date.now();
   const results = [];
   for (const command of payload.commands) {
     try {
@@ -820,6 +981,18 @@ const executeCommandBatch = async ({
         error: error instanceof Error ? error.message : "Unknown command error."
       });
     }
+  }
+
+  const durationMs = Date.now() - startTime;
+  if (commandLogStore) {
+    commandLogStore
+      .append(profile.dataDir, {
+        ts: new Date().toISOString(),
+        commands: payload.commands,
+        durationMs,
+        results: results as any
+      })
+      .catch((err) => console.warn("[command-log] write failed:", err));
   }
 
   const successCount = results.filter((result) => result.ok).length;
@@ -905,7 +1078,7 @@ const fetchGeoInfo = async (ip: string): Promise<{
   country: string; region: string; city: string; isp: string; org: string;
 }> => {
   const res = await fetch(
-    `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,regionName,city,isp,org`,
+    `https://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,message,country,regionName,city,isp,org`,
     { signal: AbortSignal.timeout(8_000) }
   );
   const data = await res.json() as { status: string; message?: string; country?: string; regionName?: string; city?: string; isp?: string; org?: string };
@@ -913,23 +1086,30 @@ const fetchGeoInfo = async (ip: string): Promise<{
   return { country: data.country ?? "", region: data.regionName ?? "", city: data.city ?? "", isp: data.isp ?? "", org: data.org ?? "" };
 };
 
-const fetchScamalyticsInfo = async (ip: string): Promise<{
-  score: number | null; risk: string | null; url: string;
+const fetchFraudScore = async (ip: string): Promise<{
+  score: number | null; risk: string | null; type: string | null; url: string;
 }> => {
-  const url = `https://scamalytics.com/ip/${encodeURIComponent(ip)}`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" },
-    signal: AbortSignal.timeout(10_000)
-  });
-  const html = await res.text();
-  const scoreMatch = html.match(/"fraud_score"\s*:\s*"?(\d+)"?/i) ?? html.match(/fraud[_ ]score[^<\d]*?(\d+)/i) ?? html.match(/<div[^>]*class="[^"]*score[^"]*"[^>]*>\s*(\d+)/i);
-  const riskMatch = html.match(/(very high|high|medium|low)\s*risk/i);
-  const score = scoreMatch?.[1] !== undefined ? parseInt(scoreMatch[1], 10) : null;
-  const risk = riskMatch?.[1]?.toLowerCase() ?? null;
-  if (score === null && risk === null) {
-    throw new Error("Score unavailable — page may be blocked or markup changed");
+  const url = `https://proxycheck.io/`;
+  const res = await fetch(
+    `https://proxycheck.io/v2/${encodeURIComponent(ip)}?vpn=1&risk=1`,
+    { signal: AbortSignal.timeout(10_000) }
+  );
+  const data = await res.json() as Record<string, unknown>;
+  if (data["status"] !== "ok") throw new Error("proxycheck.io lookup failed");
+  const ipData = data[ip] as Record<string, unknown> | undefined;
+  if (!ipData) throw new Error("No data returned for IP");
+  const rawRisk = ipData["risk"];
+  const score = typeof rawRisk === "number" ? rawRisk :
+                typeof rawRisk === "string" ? parseInt(rawRisk, 10) : null;
+  let risk: string | null = null;
+  if (score !== null && !isNaN(score)) {
+    if (score >= 75) risk = "very high";
+    else if (score >= 50) risk = "high";
+    else if (score >= 25) risk = "medium";
+    else risk = "low";
   }
-  return { score, risk, url };
+  const type = typeof ipData["type"] === "string" ? ipData["type"] : null;
+  return { score: (score !== null && !isNaN(score)) ? score : null, risk, type, url };
 };
 
 const checkSpamhaus = async (ip: string): Promise<{
