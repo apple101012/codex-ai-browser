@@ -13,6 +13,9 @@ const els = {
   profileProxy: document.getElementById("profileProxy"),
   profileDataDir: document.getElementById("profileDataDir"),
   profileHeadless: document.getElementById("profileHeadless"),
+  profileWindowWidth: document.getElementById("profileWindowWidth"),
+  profileWindowHeight: document.getElementById("profileWindowHeight"),
+  profileNotes: document.getElementById("profileNotes"),
   checkProxyBtn: document.getElementById("checkProxyBtn"),
   createProfileBtn: document.getElementById("createProfileBtn"),
   profileActionStatus: document.getElementById("profileActionStatus"),
@@ -269,14 +272,24 @@ const refreshProfiles = async () => {
           <span class="profile-color-dot" style="background-color: ${color}; color: ${color}; margin-top: 6px;"></span>
           <div>
             <div style="font-weight: 600; font-size: 0.95rem;">${escapeHtml(profile.name)}</div>
-            <div style="font-size: 0.75rem; color: var(--primary); margin-top: 4px; user-select: all; cursor: pointer; font-family: monospace; word-break: break-all;" title="Double click to select entirely">${escapeHtml(profile.id)}</div>
+            <div id="notes-display-${escapeHtml(profile.id)}" style="font-size:0.75rem;color:var(--text-muted);margin-top:3px;font-style:italic;">${profile.notes ? escapeHtml(profile.notes) : ""}</div>
+            <div id="notes-edit-${escapeHtml(profile.id)}" style="display:none;margin-top:4px;">
+              <input id="notes-input-${escapeHtml(profile.id)}" type="text" maxlength="1000" placeholder="Add a note..." style="width:100%;padding:3px 6px;font-size:0.75rem;background:var(--bg-dark);border:1px solid var(--border-highlight);border-radius:5px;color:var(--text-main);" />
+              <div style="display:flex;gap:4px;margin-top:3px;">
+                <button id="notes-save-${escapeHtml(profile.id)}" class="btn-success btn-sm" style="font-size:0.7rem;padding:2px 8px;">Save</button>
+                <button id="notes-clear-${escapeHtml(profile.id)}" class="btn-warning btn-sm" style="font-size:0.7rem;padding:2px 8px;">Clear</button>
+                <button id="notes-cancel-${escapeHtml(profile.id)}" class="btn-secondary btn-sm" style="font-size:0.7rem;padding:2px 8px;">Cancel</button>
+              </div>
+            </div>
+            <div class="profile-id-copy" role="button" tabindex="0" aria-label="Copy profile ID" data-id="${escapeHtml(profile.id)}" style="font-size: 0.75rem; color: var(--primary); margin-top: 4px; cursor: pointer; font-family: monospace; word-break: break-all;" title="Click to copy ID">${escapeHtml(profile.id)}</div>
+            <div id="copy-announce-${escapeHtml(profile.id)}" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;"></div>
             <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; user-select: all; cursor: pointer; font-family: monospace; word-break: break-all;" title="Browser profile directory">${escapeHtml(profile.dataDir ?? "No directory recorded")}</div>
           </div>
         </div>
       </td>
       <td>
         <div style="font-weight: 500;">${escapeHtml(profile.engine)}</div>
-        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${isVisible ? "Visible UI" : "Hidden UI"}</div>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">${isVisible ? "Visible UI" : "Hidden UI"}${profile.settings?.windowWidth != null && profile.settings?.windowHeight != null ? ` · ${String(profile.settings.windowWidth)}×${String(profile.settings.windowHeight)}` : ""}</div>
         <div id="proxy-display-${escapeHtml(profile.id)}" style="margin-top: 6px;">
           ${proxyHasValue
             ? `<span style="font-size: 0.75rem; color: var(--primary); font-family: monospace;">&#x1F512; ${escapeHtml(proxySummary)}</span>`
@@ -305,6 +318,38 @@ const refreshProfiles = async () => {
         <div class="actions-container"></div>
       </td>
     `;
+
+    // Click-to-copy profile ID (keyboard and mouse, with screen-reader announcement)
+    let isCopying = false;
+    const doCopyId = async () => {
+      if (isCopying) return;
+      const idEl = tr.querySelector(".profile-id-copy");
+      const announceEl = document.getElementById(`copy-announce-${profile.id}`);
+      if (!idEl) return;
+      const id = idEl.getAttribute("data-id") ?? "";
+      try {
+        isCopying = true;
+        await navigator.clipboard.writeText(id);
+        const orig = idEl.textContent ?? "";
+        idEl.textContent = "Copied!";
+        if (announceEl) announceEl.textContent = "Profile ID copied to clipboard";
+        setTimeout(() => {
+          idEl.textContent = orig;
+          if (announceEl) announceEl.textContent = "";
+          isCopying = false;
+        }, 1500);
+      } catch {
+        isCopying = false;
+        setStatus(els.profileActionStatus, "Copy failed — select text manually.", "warn");
+      }
+    };
+    tr.querySelector(".profile-id-copy")?.addEventListener("click", doCopyId);
+    tr.querySelector(".profile-id-copy")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        doCopyId();
+      }
+    });
 
     const actionsContainer = tr.querySelector(".actions-container");
 
@@ -503,7 +548,64 @@ const refreshProfiles = async () => {
     grp4.className = "btn-group";
     grp4.append(proxyBtn, clearProxyBtn);
 
-    // Group 5: Delete
+    // Group 5: Edit Notes (inline)
+    const editNotesBtn = document.createElement("button");
+    editNotesBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg> Notes`;
+    editNotesBtn.className = "btn-secondary btn-sm";
+    editNotesBtn.setAttribute("aria-label", `Edit notes for ${profile.name}`);
+    editNotesBtn.onclick = () => {
+      const displayEl = document.getElementById(`notes-display-${profile.id}`);
+      const editEl = document.getElementById(`notes-edit-${profile.id}`);
+      const inputEl = document.getElementById(`notes-input-${profile.id}`);
+      if (!displayEl || !editEl || !inputEl) return;
+
+      editEl.style.display = "block";
+      displayEl.style.display = "none";
+      inputEl.value = profile.notes ?? "";
+      inputEl.focus();
+
+      const closeEdit = () => {
+        editEl.style.display = "none";
+        displayEl.style.display = "block";
+      };
+
+      document.getElementById(`notes-save-${profile.id}`).onclick = async () => {
+        const trimmed = inputEl.value.trim();
+        closeEdit();
+        await runAction(
+          `Update notes for ${profile.name}`,
+          () => request(`/profiles/${profile.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ notes: trimmed || null })
+          }),
+          els.profileActionStatus
+        );
+        await refreshProfiles();
+      };
+
+      document.getElementById(`notes-clear-${profile.id}`).onclick = async () => {
+        closeEdit();
+        await runAction(
+          `Clear notes for ${profile.name}`,
+          () => request(`/profiles/${profile.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ notes: null })
+          }),
+          els.profileActionStatus
+        );
+        await refreshProfiles();
+      };
+
+      document.getElementById(`notes-cancel-${profile.id}`).onclick = () => {
+        closeEdit();
+      };
+    };
+
+    const grp5 = document.createElement("div");
+    grp5.className = "btn-group";
+    grp5.append(editNotesBtn);
+
+    // Group 6: Delete
     const deleteBtn = document.createElement("button");
     deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Delete`;
     deleteBtn.title = "Delete";
@@ -530,7 +632,7 @@ const refreshProfiles = async () => {
     previewBtn.disabled = !isRunning;
     previewBtn.onclick = () => openScreenshotPreview(profile.id, profile.name);
 
-    actionsContainer.append(grp1, grp2, grp3, grp4, previewBtn, deleteBtn);
+    actionsContainer.append(grp1, grp2, grp3, grp4, grp5, previewBtn, deleteBtn);
     els.profilesBody.append(tr);
   }
   } finally {
@@ -696,9 +798,27 @@ els.createProfileBtn.onclick = async () => {
   const proxyInput = els.profileProxy.value.trim();
   const externalDataDir = els.profileDataDir.value.trim();
   const headless = els.profileHeadless.checked;
+  const windowWidthRaw = els.profileWindowWidth?.value.trim();
+  const windowHeightRaw = els.profileWindowHeight?.value.trim();
+  const windowWidth = windowWidthRaw ? Number.parseInt(windowWidthRaw, 10) : undefined;
+  const windowHeight = windowHeightRaw ? Number.parseInt(windowHeightRaw, 10) : undefined;
+  const notes = els.profileNotes?.value.trim() || undefined;
 
   if (!name) {
     setStatus(els.profileActionStatus, "Profile name is required.", "err");
+    return;
+  }
+
+  if ((windowWidthRaw && !windowHeightRaw) || (!windowWidthRaw && windowHeightRaw)) {
+    setStatus(els.profileActionStatus, "Provide both Width and Height, or leave both empty.", "err");
+    return;
+  }
+  if (windowWidth !== undefined && (Number.isNaN(windowWidth) || windowWidth < 200 || windowWidth > 7680)) {
+    setStatus(els.profileActionStatus, "Window width must be between 200 and 7680.", "err");
+    return;
+  }
+  if (windowHeight !== undefined && (Number.isNaN(windowHeight) || windowHeight < 200 || windowHeight > 4320)) {
+    setStatus(els.profileActionStatus, "Window height must be between 200 and 4320.", "err");
     return;
   }
 
@@ -720,10 +840,12 @@ els.createProfileBtn.onclick = async () => {
         body: JSON.stringify({
           name,
           engine,
+          notes,
           settings: {
             ...(userAgent ? { userAgent } : {}),
             ...(proxy ? { proxy } : {}),
-            headless
+            headless,
+            ...(windowWidth !== undefined && windowHeight !== undefined ? { windowWidth, windowHeight } : {})
           },
           externalDataDir: externalDataDir || undefined
         })
@@ -735,6 +857,9 @@ els.createProfileBtn.onclick = async () => {
   els.profileProxy.value = "";
   els.profileDataDir.value = "";
   els.profileHeadless.checked = false;
+  if (els.profileWindowWidth) els.profileWindowWidth.value = "";
+  if (els.profileWindowHeight) els.profileWindowHeight.value = "";
+  if (els.profileNotes) els.profileNotes.value = "";
   await refreshProfiles();
 };
 

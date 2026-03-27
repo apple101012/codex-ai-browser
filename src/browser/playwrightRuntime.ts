@@ -1,7 +1,7 @@
 import { access, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { chromium, firefox, type BrowserContext, type BrowserType, type Locator, type Page } from "playwright";
+import { chromium, firefox, type BrowserContext, type BrowserType, type Cookie, type Locator, type Page } from "playwright";
 import type { BrowserRuntime } from "./runtime.js";
 import type { BrowserCommand, CommandExecutionResult } from "../domain/commands.js";
 import type { ProfileRecord } from "../domain/profile.js";
@@ -293,13 +293,13 @@ export class PlaywrightRuntime implements BrowserRuntime {
       .map(([profileId]) => profileId);
   }
 
-  async getCookies(profileId: string, urls?: string[]): Promise<import("playwright").Cookie[]> {
+  async getCookies(profileId: string, urls?: string[]): Promise<Cookie[]> {
     const session = this.sessions.get(profileId);
     if (!session || session.closed) throw new Error(`Profile ${profileId} is not running.`);
     return session.context.cookies(urls);
   }
 
-  async addCookies(profileId: string, cookies: import("playwright").Cookie[]): Promise<void> {
+  async addCookies(profileId: string, cookies: Cookie[]): Promise<void> {
     const session = this.sessions.get(profileId);
     if (!session || session.closed) throw new Error(`Profile ${profileId} is not running.`);
     await session.context.addCookies(cookies);
@@ -311,7 +311,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
     // Skip headed (visible) profiles — their OS window controls its own size.
     // Calling page.setViewportSize() on a headed Chrome window triggers an
     // OS-level window resize which causes a white flash / blank page.
-    if (!session.isHeadless) return;
+    if (session.isHeadless !== true) return;
     // Update all open pages so media queries re-evaluate and layout reflows
     const pages = session.context.pages().filter((p) => !p.isClosed());
     await Promise.all(pages.map((p) => p.setViewportSize({ width, height })));
@@ -2036,26 +2036,32 @@ export class PlaywrightRuntime implements BrowserRuntime {
     return undefined;
   }
 
-  private async launchContext(profile: ProfileRecord): Promise<BrowserContext> {
-    const browserType = this.resolveBrowserType(profile.engine);
+  /** Extracted for testability — builds the launchPersistentContext options without launching. */
+  public buildLaunchOptions(
+    profile: ProfileRecord,
+    isHeadless: boolean,
+    isChromium: boolean,
+    isFirefox: boolean,
+    extensionArgs: string[]
+  ) {
     const channel = this.resolveChannel(profile.engine);
-    const isFirefox = profile.engine === "firefox";
-    const extensionArgs = await this.resolveAcceleratorExtensionArgs(profile);
-    
-    // Apply anti-detection to all Chromium-based engines, not just channel (Chrome/Edge)
-    const isChromium = !isFirefox;
-    const isHeadless = profile.settings.headless ?? this.defaultHeadless;
     // When running headless without a custom UA, Playwright defaults to "HeadlessChrome/..."
     // which Google reliably detects and blocks. Override with a real Chrome UA.
     const effectiveUserAgent = profile.settings.userAgent ??
       (isChromium && isHeadless
         ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
         : undefined);
-    const launchOptions = {
+    return {
       headless: isHeadless,
-      // Disable sandbox in headless mode — sandbox requires user namespaces which
-      // are unavailable in most VPS/container environments.
-      chromiumSandbox: isChromium && !isHeadless,
+      // In headed mode, disable Playwright's virtual viewport so the OS window
+      // controls the page dimensions. Without viewport: null, Playwright enforces
+      // a fixed virtual viewport (1280×720 default) — resizing the OS window then
+      // leaves blank/white areas because the page doesn't reflow to fill the new size.
+      // In headless mode leave viewport undefined so Playwright uses its default.
+      viewport: isHeadless ? undefined : null,
+      // Disable sandbox on Linux (VPS/container environments lack user namespaces).
+      // On macOS/Windows the sandbox is safe to enable for headed profiles.
+      chromiumSandbox: isChromium && !isHeadless && process.platform !== "linux",
       proxy: profile.settings.proxy
         ? {
             server: profile.settings.proxy.server,
@@ -2067,34 +2073,46 @@ export class PlaywrightRuntime implements BrowserRuntime {
       channel,
       ignoreDefaultArgs: isChromium ? ["--enable-automation"] : undefined,
       args: [
-        ...(extensionArgs ?? []),
+        ...extensionArgs,
         ...(isChromium ? [
           "--disable-blink-features=AutomationControlled",
           "--no-first-run",
           "--no-default-browser-check",
           "--disable-infobars",
           "--password-store=basic",
-          "--use-mock-keychain"
+          "--use-mock-keychain",
+          // Set initial window size for headed mode when specified by the profile
+          ...(!isHeadless && profile.settings.windowWidth !== undefined && profile.settings.windowHeight !== undefined
+            ? [`--window-size=${profile.settings.windowWidth},${profile.settings.windowHeight}`]
+            : [])
         ] : [])
       ],
       // Firefox-specific preferences to enable keyboard shortcuts in automation mode
-      // Note: These preferences allow MANUAL keyboard shortcuts by the user,
-      // but programmatic shortcuts via page.keyboard.press() may still be limited
       firefoxUserPrefs: isFirefox
         ? {
-            // Key preferences for enabling manual keyboard shortcuts:
-            // Disable WebDriver mode that blocks browser shortcuts
             "dom.webdriver.enabled": false,
-            // Allow full browser functionality (not restricted automation mode)
-            "marionette.webdriver": false,
-            // Ensure keyboard shortcuts are enabled
-            "browser.shortcuts.enabled": true,
-            // Additional preferences for better compatibility
-            "browser.tabs.remote.autostart": true,
-            "browser.tabs.remote.autostart.2": true
+            "marionette.enabled": false,
+            // Set initial window size for headed Firefox via prefs (CLI --width/--height
+            // flags are unreliable in Playwright Firefox; prefs are the canonical approach)
+            ...(!isHeadless && profile.settings.windowWidth !== undefined && profile.settings.windowHeight !== undefined
+              ? {
+                  "toolkit.defaultChromeWidth": profile.settings.windowWidth,
+                  "toolkit.defaultChromeHeight": profile.settings.windowHeight
+                }
+              : {})
           }
         : undefined
     };
+  }
+
+  private async launchContext(profile: ProfileRecord): Promise<BrowserContext> {
+    const browserType = this.resolveBrowserType(profile.engine);
+    const channel = this.resolveChannel(profile.engine);
+    const isFirefox = profile.engine === "firefox";
+    const extensionArgs = await this.resolveAcceleratorExtensionArgs(profile);
+    const isChromium = !isFirefox;
+    const isHeadless = profile.settings.headless ?? this.defaultHeadless;
+    const launchOptions = this.buildLaunchOptions(profile, isHeadless, isChromium, isFirefox, extensionArgs ?? []);
 
     try {
       return await browserType.launchPersistentContext(profile.dataDir, launchOptions);

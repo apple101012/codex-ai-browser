@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
@@ -68,6 +68,7 @@ export class ProfileStore {
         ...payload.settings,
         ...(proxy ? { proxy } : {})
       },
+      notes: payload.notes ?? undefined,
       createdAt: now,
       updatedAt: now,
       dataDir,
@@ -95,7 +96,7 @@ export class ProfileStore {
     const proxy = payload.settings && "proxy" in payload.settings
       ? coerceProxyConfig(payload.settings.proxy, { emptyStringAsUndefined: true })
       : current.settings.proxy;
-    const nextSettings = {
+    const nextSettings: Record<string, unknown> = {
       ...current.settings,
       ...(payload.settings ?? {})
     };
@@ -104,11 +105,19 @@ export class ProfileStore {
     } else {
       nextSettings.proxy = proxy;
     }
+    // null windowWidth or windowHeight means "clear both" — they must travel together
+    if (payload.settings &&
+        (("windowWidth" in payload.settings && payload.settings.windowWidth === null) ||
+         ("windowHeight" in payload.settings && payload.settings.windowHeight === null))) {
+      delete nextSettings.windowWidth;
+      delete nextSettings.windowHeight;
+    }
     const nextRecord: ProfileRecord = ProfileRecordSchema.parse({
       ...current,
       name: payload.name ?? current.name,
       engine: payload.engine ?? current.engine,
       settings: nextSettings,
+      notes: "notes" in payload ? (payload.notes ?? undefined) : current.notes,
       dataDir: payload.externalDataDir ? path.resolve(payload.externalDataDir.trim()) : current.dataDir,
       managedDataDir: payload.externalDataDir ? false : current.managedDataDir,
       updatedAt: new Date().toISOString()
@@ -192,7 +201,6 @@ export class ProfileStore {
     const tmpPath = `${this.indexPath}.tmp`;
     const serialized = JSON.stringify(records, null, 2);
     await writeFile(tmpPath, serialized, "utf-8");
-    await writeFile(this.indexPath, serialized, "utf-8");
-    await rm(tmpPath, { force: true });
+    await rename(tmpPath, this.indexPath);
   }
 }
