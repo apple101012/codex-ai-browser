@@ -1272,14 +1272,145 @@ const runCli = async (): Promise<void> => {
     }
     case "fill-job": {
       // Inject and run the job autofill script from the job-apply-extension repo
+      // Uses Playwright native actions for custom dropdowns (React Select, etc.)
       const injectPath = rest[0] || "C:/Users/Apple/Documents/Github/job-apply-extension/inject.js";
       const script = await readFile(injectPath, "utf-8");
-      // First inject the script, then trigger fill
-      const batch = await runActiveCommands(ctx, [
-        { type: "evaluate", expression: script },
-        { type: "evaluate", expression: "JSON.stringify(window.__jobAutoFill())" }
+
+      // Step 1: Inject script
+      await runActiveCommands(ctx, [{ type: "evaluate", expression: script }]);
+
+      // Step 2: Fill basic fields (text, native select, radio, checkbox) and get dropdown queue
+      const basicResult = await runActiveCommands(ctx, [
+        { type: "evaluate", expression: "window.__jobAutoFill('basic').then(r => JSON.stringify(r))" }
       ]);
-      formatCommand(ctx, batch);
+      const basicData = basicResult.results[0];
+      let fillResult = { platform: "unknown", filled: 0, pendingDropdowns: [] as Array<{ selector: string; searchText: string; matchPattern: string; label: string; fieldKey: string }> };
+      if (basicData?.ok && basicData.data) {
+        try {
+          const rawData = typeof basicData.data === "string" ? basicData.data : (basicData.data as Record<string, unknown>).value;
+          if (rawData) fillResult = JSON.parse(String(rawData));
+        } catch {}
+      }
+
+      print(ctx, basicResult, `Filled ${fillResult.filled} basic fields (${fillResult.platform})`);
+
+      // Step 3: Fill custom dropdowns using Playwright native actions
+      if (fillResult.pendingDropdowns && fillResult.pendingDropdowns.length > 0) {
+        print(ctx, basicResult, `Filling ${fillResult.pendingDropdowns.length} custom dropdowns via Playwright...`);
+        let dropdownsFilled = 0;
+
+        for (const dd of fillResult.pendingDropdowns) {
+          try {
+            // Click to open dropdown, then clear existing text and type search text
+            await runActiveCommands(ctx, [
+              { type: "click", selector: dd.selector, includeStateAfter: false }
+            ]);
+            await new Promise(r => setTimeout(r, 200));
+
+            // Clear any existing text, then type search text char by char (triggers React Select filter)
+            await runActiveCommands(ctx, [{ type: "press", key: "Control+a" }]);
+            await runActiveCommands(ctx, [{ type: "press", key: "Backspace" }]);
+            await runActiveCommands(ctx, [
+              { type: "type", selector: dd.selector, text: dd.searchText, clear: false, includeStateAfter: false }
+            ]);
+
+            // Wait for dropdown options to render
+            await new Promise(r => setTimeout(r, 600));
+
+            // Find the matching option in the React Select dropdown menu
+            // React Select renders menus via portals (at body level), so we use the input's ID
+            // to find the corresponding listbox: react-select-{inputId}-listbox
+            const escapedSelector = dd.selector.replace(/'/g, "\\'");
+            const matchExpr = `(function() {
+              var input = document.querySelector('${escapedSelector}');
+              if (!input) return null;
+
+              var matchRe = ${dd.matchPattern || `/${dd.searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/i`};
+
+              // Strategy 1: React Select portaled listbox (react-select-{inputId}-listbox)
+              if (input.id) {
+                var listbox = document.getElementById('react-select-' + input.id + '-listbox');
+                if (listbox) {
+                  var opts = listbox.querySelectorAll('[role="option"]');
+                  for (var oi = 0; oi < opts.length; oi++) {
+                    var text = opts[oi].textContent.trim();
+                    if (matchRe.test(text)) {
+                      if (opts[oi].id) return '#' + CSS.escape(opts[oi].id);
+                      return '[id="' + CSS.escape(listbox.id) + '"] > :nth-child(' + (oi + 1) + ')';
+                    }
+                  }
+                }
+              }
+
+              // Strategy 2: Look near the input (within parent containers)
+              var container = input;
+              for (var i = 0; i < 6; i++) {
+                if (!container.parentElement) break;
+                container = container.parentElement;
+                var menu = container.querySelector('[class*="menu"]');
+                if (menu) {
+                  var opts2 = menu.querySelectorAll('[role="option"],[class*="option"]:not([class*="no-option"])');
+                  for (var oj = 0; oj < opts2.length; oj++) {
+                    if (matchRe.test(opts2[oj].textContent.trim())) {
+                      if (opts2[oj].id) return '#' + CSS.escape(opts2[oj].id);
+                    }
+                  }
+                }
+              }
+
+              // Strategy 3: Global search (last resort, filters out ITI phone picker)
+              var selectors = ['[role="option"]', '[class*="option"]:not([class*="no-option"])'];
+              for (var si = 0; si < selectors.length; si++) {
+                var all = document.querySelectorAll(selectors[si]);
+                for (var ok = 0; ok < all.length; ok++) {
+                  // Skip ITI (phone country picker) options
+                  if (all[ok].id && all[ok].id.startsWith('iti-')) continue;
+                  if (matchRe.test(all[ok].textContent.trim())) {
+                    if (all[ok].id) return '#' + CSS.escape(all[ok].id);
+                  }
+                }
+              }
+              return null;
+            })()`;
+
+            const matchResult = await runActiveCommands(ctx, [
+              { type: "evaluate", expression: matchExpr }
+            ]);
+
+            const matchData = matchResult.results[0]?.data;
+            const optionSelector = typeof matchData === "string" ? matchData : (matchData as Record<string, unknown> | undefined)?.value as string | undefined;
+
+            if (optionSelector && optionSelector !== "null") {
+              // Click the matching option using Playwright
+              await runActiveCommands(ctx, [
+                { type: "click", selector: optionSelector, includeStateAfter: false }
+              ]);
+              dropdownsFilled++;
+              print(ctx, matchResult, `  ✓ ${dd.label || dd.fieldKey}: "${dd.searchText}"`);
+            } else {
+              // Fallback: press ArrowDown then Enter to select the first filtered option
+              await runActiveCommands(ctx, [{ type: "press", key: "ArrowDown" }]);
+              await new Promise(r => setTimeout(r, 200));
+              await runActiveCommands(ctx, [{ type: "press", key: "Enter" }]);
+              await new Promise(r => setTimeout(r, 100));
+              await runActiveCommands(ctx, [{ type: "press", key: "Tab" }]);
+              dropdownsFilled++;
+              print(ctx, matchResult, `  ~ ${dd.label || dd.fieldKey}: ArrowDown+Enter fallback`);
+            }
+
+            // Close any open dropdown and pause between dropdowns
+            await runActiveCommands(ctx, [{ type: "press", key: "Escape" }]);
+            await new Promise(r => setTimeout(r, 300));
+
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            print(ctx, basicResult, `  ✗ ${dd.label || dd.fieldKey}: ${errMsg}`);
+          }
+        }
+        print(ctx, basicResult, `Dropdowns: ${dropdownsFilled}/${fillResult.pendingDropdowns.length} filled`);
+      }
+
+      print(ctx, basicResult, `Total: ${fillResult.filled + (fillResult.pendingDropdowns?.length || 0)} fields processed`);
       return;
     }
     default:
