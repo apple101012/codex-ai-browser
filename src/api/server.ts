@@ -13,9 +13,11 @@ import {
   type ProfileRecord,
   UpdateProfileInputSchema
 } from "../domain/profile.js";
-import { RunCommandsRequestSchema } from "../domain/commands.js";
+import { type CommandExecutionResult, RunCommandsRequestSchema } from "../domain/commands.js";
+import { applyBatchStateSkip } from "../domain/batchOptimize.js";
 import type { ProfileStore } from "../storage/profileStore.js";
 import type { BrowserRuntime } from "../browser/runtime.js";
+import type { Cookie } from "playwright";
 import type { AppConfig } from "../config.js";
 import type { ActiveControlStore } from "../control/activeControlStore.js";
 import { ProfileBackupStore } from "../storage/profileBackupStore.js";
@@ -656,7 +658,7 @@ export const buildServer = ({
     }
     const { cookies } = AddCookiesBodySchema.parse(request.body);
     try {
-      await runtime.addCookies(profile.id, cookies as any);
+      await runtime.addCookies(profile.id, cookies as Cookie[]);
     } catch (err: any) {
       return reply.code(422).send({ error: "Failed to add cookies", detail: String(err?.message ?? err) });
     }
@@ -1024,8 +1026,9 @@ const executeCommandBatch = async ({
   }
 
   const startTime = Date.now();
-  const results = [];
-  for (const command of payload.commands) {
+  const results: CommandExecutionResult[] = [];
+  const optimizedCommands = applyBatchStateSkip(payload.commands);
+  for (const command of optimizedCommands) {
     try {
       const result = await runtime.execute(profile, command);
       results.push(result);
@@ -1045,7 +1048,7 @@ const executeCommandBatch = async ({
         ts: new Date().toISOString(),
         commands: payload.commands,
         durationMs,
-        results: results as any
+        results
       })
       .catch((err) => console.warn("[command-log] write failed:", err));
   }

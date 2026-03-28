@@ -30,7 +30,22 @@ if (!gotLock) {
   });
 
   // ── Backend lifecycle ──────────────────────────────────────────────────────
+  const isPortInUse = () => new Promise((resolve) => {
+    const net = require("net");
+    const tester = net.createServer()
+      .once("error", () => resolve(true))
+      .once("listening", () => { tester.close(); resolve(false); })
+      .listen(PORT, HOST);
+  });
+
   const startBackend = async () => {
+    // If the port is already occupied, assume an existing server is running there.
+    // Just attach to it rather than starting a new backend.
+    if (await isPortInUse()) {
+      console.log(`[backend] Port ${PORT} already in use — connecting to existing server.`);
+      return;
+    }
+
     const userDataDir = path.join(__dirname, "..", "data");
     const publicDir   = path.join(__dirname, "..", "public");
 

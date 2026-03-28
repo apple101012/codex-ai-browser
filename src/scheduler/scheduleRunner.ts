@@ -2,6 +2,8 @@ import type { ScheduleStore } from "../storage/scheduleStore.js";
 import type { CommandLogStore } from "../storage/commandLogStore.js";
 import type { ProfileStore } from "../storage/profileStore.js";
 import type { BrowserRuntime } from "../browser/runtime.js";
+import type { CommandExecutionResult } from "../domain/commands.js";
+import { applyBatchStateSkip } from "../domain/batchOptimize.js";
 
 export class ScheduleRunner {
   private readonly timers = new Map<string, NodeJS.Timeout>();
@@ -63,13 +65,14 @@ export class ScheduleRunner {
       }
 
       const startTime = Date.now();
-      const results = [];
-      for (const command of schedule.commands) {
+      const results: CommandExecutionResult[] = [];
+      const optimizedCommands = applyBatchStateSkip(schedule.commands);
+      for (const command of optimizedCommands) {
         try {
-          const result = await this.runtime.execute(profile, command as any);
+          const result = await this.runtime.execute(profile, command);
           results.push(result);
         } catch (err) {
-          results.push({ type: (command as any).type, ok: false, error: String(err) });
+          results.push({ type: command.type, ok: false, error: String(err) });
         }
       }
       const durationMs = Date.now() - startTime;
@@ -79,7 +82,7 @@ export class ScheduleRunner {
           ts: new Date().toISOString(),
           commands: schedule.commands,
           durationMs,
-          results: results as any
+          results
         })
         .catch((err) => console.warn("[scheduler] failed to write command log:", err));
 

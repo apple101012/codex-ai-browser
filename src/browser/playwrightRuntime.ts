@@ -1,11 +1,12 @@
 import { access, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { chromium, firefox, type BrowserContext, type BrowserType, type Cookie, type Locator, type Page } from "playwright";
+import { chromium, firefox, type BrowserContext, type BrowserType, type Cookie, type Frame, type Locator, type Page } from "playwright";
 import type { BrowserRuntime } from "./runtime.js";
 import type { BrowserCommand, CommandExecutionResult } from "../domain/commands.js";
 import type { ProfileRecord } from "../domain/profile.js";
 import type { ProfileStore } from "../storage/profileStore.js";
+import { cssEscape as cssEscapeNode } from "../domain/cssEscape.js";
 
 type PageCommand = Exclude<
   BrowserCommand,
@@ -392,8 +393,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
       }
       default: {
         const page =
-          (command as any).tabIndex !== undefined
-            ? this.getPageByIndex(session, (command as any).tabIndex)
+          "tabIndex" in command && command.tabIndex !== undefined
+            ? this.getPageByIndex(session, command.tabIndex as number)
             : this.getActivePage(session);
         return await this.executePageCommand(profile, command as PageCommand, page);
       }
@@ -553,6 +554,11 @@ export class PlaywrightRuntime implements BrowserRuntime {
         await page.mouse.wheel(command.deltaX ?? 0, command.deltaY ?? 300);
         return { type: command.type, ok: true, data: { x: command.x, y: command.y, deltaX: command.deltaX ?? 0, deltaY: command.deltaY ?? 300 } };
       }
+      case "setInputFiles": {
+        const locator = page.locator(command.selector).first();
+        await locator.setInputFiles(command.filePath);
+        return { type: command.type, ok: true, data: { selector: command.selector, filePath: command.filePath } };
+      }
       case "clickByText": {
         const requestedOccurrence = command.occurrence;
         const occurrence = Math.max(1, requestedOccurrence ?? 1);
@@ -624,10 +630,12 @@ export class PlaywrightRuntime implements BrowserRuntime {
         };
       }
       case "type": {
-        if (command.clear) {
-          await page.fill(command.selector, command.text);
+        // fill() is instant (sets value directly) but always clears first.
+        // pressSequentially with delay:0 is fast and preserves existing content for append.
+        if (command.clear === false) {
+          await page.locator(command.selector).pressSequentially(command.text, { delay: 0 });
         } else {
-          await page.locator(command.selector).type(command.text);
+          await page.fill(command.selector, command.text);
         }
         const stateAfter =
           command.includeStateAfter === false
@@ -636,17 +644,15 @@ export class PlaywrightRuntime implements BrowserRuntime {
         return { type: command.type, ok: true, data: stateAfter ? { stateAfter } : undefined };
       }
       case "typeIntoPrompt": {
-        const timeoutMs = command.timeoutMs ?? 15_000;
         const promptTarget = await this.resolvePromptTarget(page);
         if (!promptTarget) {
           throw new Error("No visible textbox-like controls found for typeIntoPrompt.");
         }
-        await promptTarget.locator.click({ timeout: timeoutMs });
-        if (command.clear !== false) {
-          await page.keyboard.press("Control+A");
-          await page.keyboard.press("Backspace");
+        if (command.clear === false) {
+          await promptTarget.locator.pressSequentially(command.text, { delay: 0 });
+        } else {
+          await promptTarget.locator.fill(command.text);
         }
-        await promptTarget.locator.type(command.text, { timeout: timeoutMs });
 
         const stateAfter =
           command.includeStateAfter === false
@@ -675,59 +681,56 @@ export class PlaywrightRuntime implements BrowserRuntime {
             }
             : null;
 
-        const buttons = page.locator("button:visible, [role='button']:visible");
-        const total = await buttons.count();
-        if (total === 0) {
-          throw new Error("No visible button-like controls found for submitPrompt.");
+        // Batch: find the best submit button in a single evaluate() instead of N sequential round-trips
+        const submitResult = await page.evaluate(
+          (center) => {
+            const keywords = ["create", "generate", "submit", "run", "send"];
+            const elements = Array.from(document.querySelectorAll("button, [role='button']"));
+            let bestIndex = -1;
+            let bestScore = -Infinity;
+            let bestText = "";
+            for (let i = 0; i < elements.length; i++) {
+              const el = elements[i] as HTMLElement;
+              const rect = el.getBoundingClientRect();
+              if (rect.width <= 0 || rect.height <= 0) continue;
+              if (typeof el.checkVisibility === "function" && !el.checkVisibility()) continue;
+              const innerText = (el.innerText || "").replace(/\s+/g, " ").trim();
+              const aria = (el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+              const search = (innerText + " " + aria).toLowerCase();
+              if (!keywords.some(k => search.includes(k))) continue;
+              let score = 0;
+              if (search.includes("create")) score += 30000;
+              if (search.includes("generate")) score += 30000;
+              if (center) {
+                const cx = rect.x + rect.width / 2;
+                const cy = rect.y + rect.height / 2;
+                const dist = Math.sqrt((cx - center.x) ** 2 + (cy - center.y) ** 2);
+                score += Math.max(0, 20000 - dist * 10);
+              }
+              if (score > bestScore) {
+                bestScore = score;
+                bestIndex = i;
+                bestText = innerText || aria;
+              }
+            }
+            return { index: bestIndex, text: bestText, score: bestScore, total: elements.length };
+          },
+          promptCenter
+        );
+
+        if (submitResult.total === 0) {
+          throw new Error("No button-like controls found on the page for submitPrompt.");
         }
-
-        let chosenIndex = -1;
-        let chosenText = "";
-        let chosenScore = Number.NEGATIVE_INFINITY;
-
-        for (let i = 0; i < total; i += 1) {
-          const button = buttons.nth(i);
-          const [innerTextRaw, ariaRaw, box] = await Promise.all([
-            button.innerText().catch(() => ""),
-            button.getAttribute("aria-label").catch(() => null),
-            button.boundingBox().catch(() => null)
-          ]);
-          const innerText = innerTextRaw.replace(/\s+/g, " ").trim();
-          const aria = (ariaRaw ?? "").replace(/\s+/g, " ").trim();
-          const search = `${innerText} ${aria}`.toLowerCase();
-
-          if (!["create", "generate", "submit", "run", "send"].some((keyword) => search.includes(keyword))) {
-            continue;
-          }
-
-          let score = 0;
-          if (search.includes("create")) {
-            score += 30_000;
-          }
-          if (search.includes("generate")) {
-            score += 30_000;
-          }
-          if (promptCenter && box) {
-            const cx = box.x + box.width / 2;
-            const cy = box.y + box.height / 2;
-            const dx = cx - promptCenter.x;
-            const dy = cy - promptCenter.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            score += Math.max(0, 20_000 - distance * 10);
-          }
-
-          if (score > chosenScore) {
-            chosenScore = score;
-            chosenIndex = i;
-            chosenText = innerText || aria;
-          }
-        }
-
-        if (chosenIndex < 0) {
+        if (submitResult.index < 0) {
           throw new Error("No visible submit-like controls matched create/generate keywords.");
         }
 
-        await buttons.nth(chosenIndex).click({ timeout: timeoutMs });
+        const chosenIndex = submitResult.index;
+        const chosenText = submitResult.text;
+        const chosenScore = submitResult.score;
+        const total = submitResult.total;
+
+        await page.locator("button, [role='button']").nth(chosenIndex).click({ timeout: timeoutMs });
         const stateAfter =
           command.includeStateAfter === false
             ? undefined
@@ -876,12 +879,11 @@ export class PlaywrightRuntime implements BrowserRuntime {
         });
         const target = page.locator(resolved.selector).first();
         await target.waitFor({ state: "visible", timeout: command.timeoutMs ?? 10_000 });
-        await target.click({ timeout: command.timeoutMs ?? 10_000 });
-        if (command.clear !== false) {
-          await page.keyboard.press("Control+A");
-          await page.keyboard.press("Backspace");
+        if (command.clear === false) {
+          await target.pressSequentially(command.text, { delay: 0 });
+        } else {
+          await target.fill(command.text);
         }
-        await target.type(command.text, { timeout: command.timeoutMs ?? 10_000 });
         const stateAfter =
           command.includeStateAfter === false
             ? undefined
@@ -1124,6 +1126,440 @@ export class PlaywrightRuntime implements BrowserRuntime {
         }
         return { type: command.type, ok: true, data: result };
       }
+      case "selectOption": {
+        const locator = page.locator(command.selector).first();
+        await locator.waitFor({ state: "visible", timeout: command.timeoutMs ?? 10_000 });
+        if (command.label !== undefined) {
+          await locator.selectOption({ label: command.label }, { timeout: command.timeoutMs ?? 10_000 });
+        } else if (command.index !== undefined) {
+          await locator.selectOption({ index: command.index }, { timeout: command.timeoutMs ?? 10_000 });
+        } else {
+          await locator.selectOption({ value: command.value ?? "" }, { timeout: command.timeoutMs ?? 10_000 });
+        }
+        return { type: command.type, ok: true, data: { selector: command.selector, label: command.label, value: command.value, index: command.index } };
+      }
+
+      case "waitForUrl": {
+        const timeoutMs = command.timeoutMs ?? 30_000;
+        await page.waitForURL(command.url, { timeout: timeoutMs });
+        return { type: command.type, ok: true, data: { url: page.url() } };
+      }
+
+      case "getFieldValues": {
+        const selector = command.selector ?? "input:not([type='hidden']), select, textarea";
+        const values = await page.$$eval(selector, (els) =>
+          (els as Array<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>).map((el) => ({
+            tag: el.tagName.toLowerCase(),
+            type: (el as HTMLInputElement).type ?? "",
+            id: el.id ?? "",
+            name: el.name ?? "",
+            value: (el as HTMLInputElement).value ?? "",
+            checked: (el as HTMLInputElement).checked ?? false,
+            placeholder: (el as HTMLInputElement).placeholder ?? ""
+          }))
+        );
+        return { type: command.type, ok: true, data: { fields: values, count: values.length } };
+      }
+
+      case "detectFormFields": {
+        // Helper to extract fields from a frame's evaluate context
+        const extractFieldsFromFrame = async (frame: Frame) => {
+          try {
+            return await frame.evaluate(() => {
+              const inputs = Array.from(
+                document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+                  'input:not([type="hidden"]), select, textarea'
+                )
+              );
+              return inputs
+                .filter((el) => {
+                  const rect = el.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0;
+                })
+                .map((el) => {
+                  let label = "";
+                  if (el.id) {
+                    const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                    if (labelEl) label = labelEl.textContent?.trim() ?? "";
+                  }
+                  if (!label) {
+                    const wrappingLabel = el.closest("label");
+                    if (wrappingLabel) {
+                      const clone = wrappingLabel.cloneNode(true) as HTMLElement;
+                      clone.querySelectorAll("input,select,textarea").forEach((n) => n.remove());
+                      label = clone.textContent?.trim() ?? "";
+                    }
+                  }
+                  if (!label) label = el.getAttribute("aria-label") ?? "";
+                  if (!label) label = (el as HTMLInputElement).placeholder ?? "";
+                  if (!label) label = el.getAttribute("name") ?? "";
+
+                  const section =
+                    el.closest("fieldset")?.querySelector("legend")?.textContent?.trim() ??
+                    el.closest('[class*="section"],[class*="group"],[class*="panel"]')
+                      ?.querySelector("h1,h2,h3,h4,h5,h6,legend")
+                      ?.textContent?.trim() ??
+                    "";
+
+                  return {
+                    label,
+                    type: (el as HTMLInputElement).type ?? el.tagName.toLowerCase(),
+                    value: (el as HTMLInputElement).value ?? "",
+                    placeholder: (el as HTMLInputElement).placeholder ?? "",
+                    name: el.name ?? "",
+                    id: el.id ?? "",
+                    required: (el as HTMLInputElement).required ?? false,
+                    section
+                  };
+                })
+                .filter((f) => f.label || f.name || f.placeholder || f.id);
+            });
+          } catch {
+            return [];
+          }
+        };
+
+        // Get fields from main frame
+        const mainFields = await extractFieldsFromFrame(page.mainFrame());
+
+        // Also search all child frames (iframes)
+        const allFrames = page.frames();
+        const childFields: typeof mainFields = [];
+        for (const frame of allFrames) {
+          if (frame === page.mainFrame()) continue;
+          const frameFields = await extractFieldsFromFrame(frame);
+          childFields.push(...frameFields);
+        }
+
+        const fields = [...mainFields, ...childFields];
+        return { type: command.type, ok: true, data: { fields, count: fields.length } };
+      }
+
+      case "fillForm": {
+        type FillResult = { label: string; status: "filled" | "skipped" | "error"; value: string };
+        const results: FillResult[] = [];
+
+        // Fast path: batch-match all fields to selectors in a single evaluate() call.
+        // This replaces N*7 sequential Playwright IPCs with one DOM walk.
+        const fieldMatches = await page.evaluate((fields) => {
+          // Synced copy of CSS_ESCAPE_PATTERN from src/domain/cssEscape.ts (can't import in evaluate)
+          const cssEsc = (s: string) => s.replace(/["'\\[\](){}|^$*+?.:#~>,]/g, (c) => `\\${c}`);
+          return fields.map(({ label }) => {
+            const norm = label.toLowerCase().replace(/[^a-z0-9]/g, "");
+            // Strategy order matches the original: label-for, placeholder, name exact, name partial, placeholder partial, aria-label, id
+            const strategies: Array<() => Element | null> = [
+              () => {
+                const labels = document.querySelectorAll("label");
+                for (const lbl of labels) {
+                  if ((lbl.textContent || "").toLowerCase().includes(label.toLowerCase())) {
+                    const forId = lbl.getAttribute("for");
+                    if (forId) return document.getElementById(forId);
+                    return lbl.querySelector("input, textarea, select");
+                  }
+                }
+                return null;
+              },
+              () => document.querySelector(`[placeholder*="${cssEsc(label)}" i]`),
+              () => document.querySelector(`[name="${cssEsc(norm)}"]`),
+              () => document.querySelector(`[name*="${cssEsc(norm)}"]`),
+              () => document.querySelector(`[placeholder*="${cssEsc(label)}"]`),
+              () => document.querySelector(`[aria-label*="${cssEsc(label)}" i]`),
+              () => document.querySelector(`[id*="${cssEsc(norm)}"]`)
+            ];
+            for (const strategy of strategies) {
+              try {
+                const el = strategy();
+                if (el) {
+                  const htmlEl = el as HTMLElement;
+                  const rect = htmlEl.getBoundingClientRect?.();
+                  if (rect && rect.width > 0 && rect.height > 0 &&
+                      (typeof htmlEl.checkVisibility !== "function" || htmlEl.checkVisibility())) {
+                    const tag = el.tagName.toLowerCase();
+                    const type = (el as HTMLInputElement).type?.toLowerCase() || "";
+                    // Build a unique selector for this element
+                    let sel = "";
+                    if (el.id) sel = `#${cssEsc(el.id)}`;
+                    else if (el.getAttribute("name")) sel = `${tag}[name="${cssEsc(el.getAttribute("name")!)}"]`;
+                    else if (el.getAttribute("aria-label")) sel = `${tag}[aria-label="${cssEsc(el.getAttribute("aria-label")!)}"]`;
+                    else if ((el as HTMLInputElement).placeholder) sel = `${tag}[placeholder="${cssEsc((el as HTMLInputElement).placeholder)}"]`;
+                    return { found: true, selector: sel, tag, type };
+                  }
+                }
+              } catch { /* skip broken strategy */ }
+            }
+            return { found: false, selector: "", tag: "", type: "" };
+          });
+        }, command.fields.map(f => ({ label: f.label })));
+
+        // Helper: get all child frames (accessible same-origin iframes)
+        const getChildFrames = () => {
+          return page.frames().filter(f => f !== page.mainFrame());
+        };
+
+        for (let fi = 0; fi < command.fields.length; fi++) {
+          const field = command.fields[fi]!;
+          const match = fieldMatches[fi];
+          let status: "filled" | "skipped" | "error" = "skipped";
+          let resultValue = field.value;
+          try {
+            // Fast path: use the selector found in the batch evaluate
+            if (match?.found && match.selector) {
+              const locator = page.locator(match.selector).first();
+              if (match.tag === "select") {
+                await locator
+                  .selectOption({ label: field.value })
+                  .catch(() => locator.selectOption({ value: field.value }))
+                  .catch(() => locator.selectOption(field.value));
+                status = "filled";
+              } else if (match.type === "checkbox") {
+                const shouldCheck = ["true", "yes", "1", "on"].includes(field.value.toLowerCase());
+                if (shouldCheck) await locator.check();
+                else await locator.uncheck();
+                status = "filled";
+              } else if (match.type === "radio") {
+                await locator.check();
+                status = "filled";
+              } else {
+                await locator.fill(field.value);
+                status = "filled";
+              }
+              results.push({ label: field.label, status, value: resultValue });
+              continue;
+            }
+
+            // Slow fallback: use the original multi-strategy locator search
+            const labelNorm = field.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+            // Build strategies for a given frame
+            const buildFrameStrategies = (frame: Frame): Array<() => Locator> => [
+              () => frame.getByLabel(field.label, { exact: false }),
+              () => frame.getByPlaceholder(field.label, { exact: false }),
+              () => frame.locator(`[name="${cssEscapeNode(labelNorm)}"]`),
+              () => frame.locator(`[name*="${cssEscapeNode(labelNorm)}"]`),
+              () => frame.locator(`[placeholder*="${cssEscapeNode(field.label)}"]`),
+              () => frame.locator(`[aria-label*="${cssEscapeNode(field.label)}"]`),
+              () => frame.locator(`[id*="${cssEscapeNode(labelNorm)}"]`)
+            ];
+
+            const strategies: Array<() => Locator> = [
+              () => page.getByLabel(field.label, { exact: false }),
+              () => page.getByPlaceholder(field.label, { exact: false }),
+              () => page.locator(`[name="${cssEscapeNode(labelNorm)}"]`),
+              () => page.locator(`[name*="${cssEscapeNode(labelNorm)}"]`),
+              () => page.locator(`[placeholder*="${cssEscapeNode(field.label)}"]`),
+              () => page.locator(`[aria-label*="${cssEscapeNode(field.label)}"]`),
+              () => page.locator(`[id*="${cssEscapeNode(labelNorm)}"]`).filter({ hasNot: page.locator("label") })
+            ];
+
+            let locator: Locator | null = null;
+            for (const strategy of strategies) {
+              const loc = strategy().first();
+              const count = await loc.count();
+              if (count > 0) {
+                const isVisible = await loc.isVisible().catch(() => false);
+                if (isVisible) {
+                  locator = loc;
+                  break;
+                }
+              }
+            }
+
+            // If not found in main frame, search inside child frames (same-origin iframes)
+            if (!locator) {
+              const childFrames = getChildFrames();
+              outer: for (const frame of childFrames) {
+                const iframeStrategies = buildFrameStrategies(frame);
+                for (const strategy of iframeStrategies) {
+                  try {
+                    const loc = strategy().first();
+                    const count = await loc.count().catch(() => 0);
+                    if (count > 0) {
+                      const isVisible = await loc.isVisible().catch(() => false);
+                      if (isVisible) {
+                        locator = loc;
+                        break outer;
+                      }
+                    }
+                  } catch {
+                    // skip
+                  }
+                }
+              }
+            }
+
+            if (!locator) {
+              status = "skipped";
+            } else {
+              const tagName = await locator.evaluate((el) => el.tagName.toLowerCase());
+              const inputType = await locator.evaluate(
+                (el) => ((el as HTMLInputElement).type ?? "").toLowerCase()
+              );
+
+              if (tagName === "select") {
+                await locator
+                  .selectOption({ label: field.value })
+                  .catch(() => locator!.selectOption({ value: field.value }))
+                  .catch(() => locator!.selectOption(field.value));
+                status = "filled";
+              } else if (inputType === "checkbox") {
+                const shouldCheck =
+                  ["true", "yes", "1", "on"].includes(field.value.toLowerCase());
+                if (shouldCheck) await locator.check();
+                else await locator.uncheck();
+                status = "filled";
+              } else if (inputType === "radio") {
+                await locator.check();
+                status = "filled";
+              } else {
+                await locator.fill(field.value);
+                status = "filled";
+              }
+            }
+          } catch (err) {
+            status = "error";
+            resultValue = String(err instanceof Error ? err.message : err);
+          }
+          results.push({ label: field.label, status, value: resultValue });
+        }
+
+        const filled = results.filter((r) => r.status === "filled").length;
+        const skipped = results.filter((r) => r.status === "skipped").length;
+        const errors = results.filter((r) => r.status === "error").length;
+        return { type: command.type, ok: true, data: { results, filled, skipped, errors } };
+      }
+
+      case "advanceForm": {
+        const ADVANCE_TEXTS = [
+          "next", "continue", "save & continue", "save and continue",
+          "proceed", "next step", "next page", "save & next", "next >"
+        ];
+        const FORBIDDEN_TEXTS = [
+          "submit", "apply now", "apply today", "send application", "send your application",
+          "finish application", "complete application", "submit application",
+          "submit your application", "review & submit", "review and submit",
+          "complete & submit", "complete and submit", "submit & apply",
+          "finish and submit", "send application", "submit form"
+        ];
+
+        // Batch: find the best advance button in a single evaluate() instead of N sequential awaits
+        const advanceIndex = await page.evaluate(
+          ({ advanceTexts, forbiddenTexts }) => {
+            const selector = 'button, [role="button"], input[type="submit"], input[type="button"]';
+            const elements = Array.from(document.querySelectorAll(selector));
+            for (let i = 0; i < elements.length; i++) {
+              const el = elements[i] as HTMLElement;
+              const rect = el.getBoundingClientRect();
+              if (rect.width <= 0 || rect.height <= 0) continue;
+              if (typeof el.checkVisibility === "function" && !el.checkVisibility()) continue;
+              const text = (
+                (el.innerText || "") + " " +
+                ((el as HTMLInputElement).value || "") + " " +
+                (el.getAttribute("aria-label") || "")
+              ).toLowerCase().trim();
+              if (forbiddenTexts.some((f: string) => text.includes(f))) continue;
+              if (advanceTexts.some((a: string) => text.includes(a))) return i;
+            }
+            return -1;
+          },
+          { advanceTexts: ADVANCE_TEXTS, forbiddenTexts: FORBIDDEN_TEXTS }
+        );
+
+        if (advanceIndex >= 0) {
+          const selector = 'button, [role="button"], input[type="submit"], input[type="button"]';
+          const btn = page.locator(selector).nth(advanceIndex);
+          const text = await btn.innerText().catch(() => "");
+          await btn.click();
+          await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => page.waitForTimeout(1500));
+          return { type: command.type, ok: true, data: { clicked: true, buttonText: text.toLowerCase().trim() } };
+        }
+        return { type: command.type, ok: true, data: { clicked: false, buttonText: null } };
+      }
+
+      case "smartFill": {
+        const { applicant, ats = "generic" } = command;
+
+        // Detect fields
+        const detectResult = await this.executePageCommand(profile, { type: "detectFormFields", tabIndex: command.tabIndex }, page);
+        if (!detectResult.ok) {
+          return { type: command.type, ok: false, error: detectResult.error ?? "detectFormFields failed" };
+        }
+        const detectedFields = (detectResult.data as { fields: Array<{ label: string; type: string }> }).fields ?? [];
+
+        // Label → applicant data fuzzy map
+        const FIELD_MAP: Array<{ patterns: string[]; key: keyof typeof applicant }> = [
+          { patterns: ["first name", "firstname", "given name", "forename"], key: "firstName" },
+          { patterns: ["last name", "lastname", "surname", "family name"], key: "lastName" },
+          { patterns: ["full name", "your name", "applicant name", "legal name", "candidate name"], key: "fullName" },
+          { patterns: ["email", "e-mail", "email address"], key: "email" },
+          { patterns: ["phone", "telephone", "mobile", "cell"], key: "phone" },
+          { patterns: ["address", "street", "address line 1", "street address"], key: "address" },
+          { patterns: ["city", "town"], key: "city" },
+          { patterns: ["state", "province", "region"], key: "state" },
+          { patterns: ["zip", "postal", "zip code", "postal code"], key: "zip" },
+          { patterns: ["country"], key: "country" },
+          { patterns: ["linkedin", "linkedin url", "linkedin profile"], key: "linkedin" },
+          { patterns: ["school", "university", "college", "institution"], key: "school" },
+          { patterns: ["degree", "degree type"], key: "degree" },
+          { patterns: ["major", "field of study", "concentration", "program"], key: "major" },
+          { patterns: ["gpa", "grade point"], key: "gpa" },
+          { patterns: ["graduation", "grad date", "expected graduation", "graduation date"], key: "gradDate" },
+          { patterns: ["start date", "enrollment date"], key: "startDate" },
+          { patterns: ["work authorization", "authorized to work", "work auth", "are you authorized"], key: "workAuth" },
+          { patterns: ["sponsorship", "visa sponsorship", "require sponsorship", "will you require"], key: "sponsorship" },
+          { patterns: ["employer", "current employer", "company"], key: "employer" },
+          { patterns: ["title", "job title", "current title", "position"], key: "title" },
+          { patterns: ["race", "ethnicity", "race/ethnicity"], key: "race" },
+          { patterns: ["gender", "sex"], key: "gender" },
+          { patterns: ["disability", "disabled"], key: "disability" },
+          { patterns: ["veteran", "military"], key: "veteran" }
+        ];
+
+        const fieldsToFill: Array<{ label: string; value: string }> = [];
+
+        for (const detected of detectedFields) {
+          const labelLower = detected.label.toLowerCase();
+          for (const mapping of FIELD_MAP) {
+            if (mapping.patterns.some((p) => labelLower.includes(p))) {
+              const value = applicant[mapping.key];
+              if (value !== undefined && value !== "") {
+                // Workday-specific: prefer short first/last name over full name
+                if (ats === "workday" && mapping.key === "fullName" && applicant.firstName) break;
+                fieldsToFill.push({ label: detected.label, value });
+              }
+              break;
+            }
+          }
+        }
+
+        if (fieldsToFill.length === 0) {
+          return {
+            type: command.type,
+            ok: true,
+            data: { message: "No fields matched applicant data", detected: detectedFields.length, filled: 0, skipped: 0, errors: 0 }
+          };
+        }
+
+        const fillResult = await this.executePageCommand(profile, { type: "fillForm", fields: fieldsToFill, tabIndex: command.tabIndex }, page);
+        if (!fillResult.ok) {
+          return { type: command.type, ok: false, error: fillResult.error ?? "fillForm failed" };
+        }
+        const fillData = fillResult.data as { filled: number; skipped: number; errors: number; results: unknown[] };
+
+        return {
+          type: command.type,
+          ok: true,
+          data: {
+            ats,
+            detected: detectedFields.length,
+            matched: fieldsToFill.length,
+            filled: fillData.filled,
+            skipped: fillData.skipped,
+            errors: fillData.errors,
+            details: fillData.results
+          }
+        };
+      }
+
       default: {
         const unreachable: never = command;
         throw new Error(`Unsupported command ${(unreachable as { type?: string }).type ?? "unknown"}`);
@@ -1426,9 +1862,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
 
       for (let i = 0; i < candidates.length; i += 1) {
         const candidate = candidates[i];
-        const style = window.getComputedStyle(candidate);
         const rect = candidate.getBoundingClientRect();
-        if (style.visibility === "hidden" || style.display === "none" || rect.width <= 0 || rect.height <= 0) {
+        if (rect.width <= 0 || rect.height <= 0 || (typeof candidate.checkVisibility === "function" ? !candidate.checkVisibility() : candidate.offsetWidth <= 0)) {
           continue;
         }
 
@@ -1477,7 +1912,7 @@ export class PlaywrightRuntime implements BrowserRuntime {
         if (testId) {
           selectorHint = '[data-testid="' + testId.replace(/"/g, '\\\\"') + '"]';
         } else if (id) {
-          selectorHint = "#" + id;
+          selectorHint = "#" + (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(id) : id.replace(/["'\\[\](){}|^$*+?.:#~>,]/g, (c) => "\\" + c));
         } else if (ariaLabel) {
           selectorHint = tag + '[aria-label="' + ariaLabel.replace(/"/g, '\\\\"') + '"]';
         } else if (role) {
@@ -1779,12 +2214,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
               }
               seen.add(candidate);
 
-              const style = window.getComputedStyle(candidate);
-              if (style.visibility === "hidden" || style.display === "none") {
-                continue;
-              }
               const rect = candidate.getBoundingClientRect();
-              if (rect.width <= 0 || rect.height <= 0) {
+              if (rect.width <= 0 || rect.height <= 0 || (typeof (candidate as HTMLElement).checkVisibility === "function" ? !(candidate as HTMLElement).checkVisibility() : (candidate as HTMLElement).offsetWidth <= 0)) {
                 continue;
               }
 
@@ -1877,9 +2308,8 @@ export class PlaywrightRuntime implements BrowserRuntime {
         }
         seenElements.add(candidate);
 
-        const style = window.getComputedStyle(candidate);
         const rect = candidate.getBoundingClientRect();
-        if (style.visibility === "hidden" || style.display === "none" || rect.width <= 0 || rect.height <= 0) {
+        if (rect.width <= 0 || rect.height <= 0 || (typeof candidate.checkVisibility === "function" ? !candidate.checkVisibility() : candidate.offsetWidth <= 0)) {
           continue;
         }
 

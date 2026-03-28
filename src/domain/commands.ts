@@ -238,6 +238,91 @@ export const ScrollCommandSchema = z.object({
   tabIndex: z.number().int().min(0).optional()
 });
 
+export const SetInputFilesCommandSchema = z.object({
+  type: z.literal("setInputFiles"),
+  selector: z.string().min(1),
+  filePath: z.string().min(1),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+export const SelectOptionCommandSchema = z.object({
+  type: z.literal("selectOption"),
+  selector: z.string().min(1),
+  value: z.string().optional(),
+  label: z.string().optional(),
+  index: z.number().int().min(0).optional(),
+  timeoutMs: z.number().int().positive().max(120_000).optional(),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+export const WaitForUrlCommandSchema = z.object({
+  type: z.literal("waitForUrl"),
+  url: z.string().min(1),
+  timeoutMs: z.number().int().positive().max(120_000).optional()
+});
+
+export const GetFieldValuesCommandSchema = z.object({
+  type: z.literal("getFieldValues"),
+  selector: z.string().min(1).optional(),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+export const DetectFormFieldsCommandSchema = z.object({
+  type: z.literal("detectFormFields"),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+const FillFormFieldSchema = z.object({
+  label: z.string().min(1),
+  value: z.string()
+});
+
+export const FillFormCommandSchema = z.object({
+  type: z.literal("fillForm"),
+  fields: z.array(FillFormFieldSchema).min(1).max(200),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+export const AdvanceFormCommandSchema = z.object({
+  type: z.literal("advanceForm"),
+  tabIndex: z.number().int().min(0).optional()
+});
+
+const ApplicantDataSchema = z.object({
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
+  fullName: z.string().optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  address: z.string().optional(),
+  city: z.string().optional(),
+  state: z.string().optional(),
+  zip: z.string().optional(),
+  country: z.string().optional(),
+  linkedin: z.string().optional(),
+  school: z.string().optional(),
+  degree: z.string().optional(),
+  major: z.string().optional(),
+  gpa: z.string().optional(),
+  gradDate: z.string().optional(),
+  startDate: z.string().optional(),
+  workAuth: z.string().optional(),
+  sponsorship: z.string().optional(),
+  employer: z.string().optional(),
+  title: z.string().optional(),
+  race: z.string().optional(),
+  gender: z.string().optional(),
+  disability: z.string().optional(),
+  veteran: z.string().optional()
+});
+
+export const SmartFillCommandSchema = z.object({
+  type: z.literal("smartFill"),
+  applicant: ApplicantDataSchema,
+  ats: z.enum(["workday", "greenhouse", "icims", "lever", "handshake", "generic"]).optional(),
+  tabIndex: z.number().int().min(0).optional()
+});
+
 export const BrowserCommandSchema = z.discriminatedUnion("type", [
   NavigateCommandSchema,
   ClickCommandSchema,
@@ -267,7 +352,15 @@ export const BrowserCommandSchema = z.discriminatedUnion("type", [
   SelectTabCommandSchema,
   CloseTabCommandSchema,
   GetTabTextCommandSchema,
-  ScrollCommandSchema
+  ScrollCommandSchema,
+  SetInputFilesCommandSchema,
+  SelectOptionCommandSchema,
+  WaitForUrlCommandSchema,
+  GetFieldValuesCommandSchema,
+  DetectFormFieldsCommandSchema,
+  FillFormCommandSchema,
+  AdvanceFormCommandSchema,
+  SmartFillCommandSchema
 ]);
 
 export type BrowserCommand = z.infer<typeof BrowserCommandSchema>;
