@@ -19,7 +19,8 @@ export const ProfileSettingsSchema = z.object({
   proxy: ProxyConfigSchema.nullish(),
   headless: z.boolean().optional(),
   windowWidth: z.number().int().min(200).max(7680).optional(),
-  windowHeight: z.number().int().min(200).max(4320).optional()
+  windowHeight: z.number().int().min(200).max(4320).optional(),
+  extensionPaths: z.array(z.string().min(1)).optional()
 }).refine(windowSizeRefine, windowSizeRefineMsg);
 export type ProfileSettings = z.infer<typeof ProfileSettingsSchema>;
 
@@ -30,7 +31,8 @@ const ProfileSettingsInputBaseSchema = z.object({
   proxy: ProxyConfigInputSchema,
   headless: z.boolean().optional(),
   windowWidth: z.number().int().min(200).max(7680).optional(),
-  windowHeight: z.number().int().min(200).max(4320).optional()
+  windowHeight: z.number().int().min(200).max(4320).optional(),
+  extensionPaths: z.array(z.string().min(1)).optional()
 });
 
 export const ProfileSettingsInputSchema = ProfileSettingsInputBaseSchema

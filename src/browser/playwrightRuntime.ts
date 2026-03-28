@@ -2501,7 +2501,14 @@ export class PlaywrightRuntime implements BrowserRuntime {
         : undefined,
       userAgent: effectiveUserAgent,
       channel,
-      ignoreDefaultArgs: isChromium ? ["--enable-automation"] : undefined,
+      ignoreDefaultArgs: isChromium
+        ? [
+            "--enable-automation",
+            ...(extensionArgs.length > 0
+              ? ["--disable-extensions", "--disable-component-extensions-with-background-pages"]
+              : [])
+          ]
+        : undefined,
       args: [
         ...extensionArgs,
         ...(isChromium ? [
@@ -2559,33 +2566,46 @@ export class PlaywrightRuntime implements BrowserRuntime {
   }
 
   private async resolveAcceleratorExtensionArgs(profile: ProfileRecord): Promise<string[] | undefined> {
-    if (!this.enableAcceleratorExtension) {
-      return undefined;
-    }
     if (profile.engine === "firefox") {
       return undefined;
     }
-    if (!this.acceleratorExtensionDir) {
-      return undefined;
-    }
 
-    try {
-      await access(this.acceleratorExtensionDir);
-    } catch {
-      if (!this.didLogMissingAcceleratorExtension) {
-        this.didLogMissingAcceleratorExtension = true;
-        console.warn(
-          `Accelerator extension directory not found: ${this.acceleratorExtensionDir}. Continuing without extension.`
-        );
+    const allExtensionDirs: string[] = [];
+
+    // Add per-profile extension paths
+    if (profile.settings.extensionPaths && profile.settings.extensionPaths.length > 0) {
+      for (const extPath of profile.settings.extensionPaths) {
+        try {
+          await access(extPath);
+          allExtensionDirs.push(extPath);
+        } catch {
+          console.warn(`Profile extension directory not found: ${extPath}. Skipping.`);
+        }
       }
+    }
+
+    // Add global accelerator extension if enabled
+    if (this.enableAcceleratorExtension && this.acceleratorExtensionDir) {
+      try {
+        await access(this.acceleratorExtensionDir);
+        allExtensionDirs.push(this.acceleratorExtensionDir);
+      } catch {
+        if (!this.didLogMissingAcceleratorExtension) {
+          this.didLogMissingAcceleratorExtension = true;
+          console.warn(
+            `Accelerator extension directory not found: ${this.acceleratorExtensionDir}. Continuing without extension.`
+          );
+        }
+      }
+    }
+
+    if (allExtensionDirs.length === 0) {
       return undefined;
     }
 
-    // Chrome/Edge may ignore side-loaded extensions in some channels.
-    // We still keep core acceleration via in-page cache, so this stays optional.
+    const joined = allExtensionDirs.join(",");
     return [
-      `--disable-extensions-except=${this.acceleratorExtensionDir}`,
-      `--load-extension=${this.acceleratorExtensionDir}`
+      `--load-extension=${joined}`
     ];
   }
 

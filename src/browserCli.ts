@@ -288,6 +288,7 @@ Core commands:
   wait-progress [--visible=<selector>]... [--hidden=<selector>]... [--timeout-ms=<n>] [--poll-ms=<n>] [--stable-for-ms=<n>]
   state
   tab-text [--tab-index=<n>] [--max-chars=<n>]
+  fill-job [path-to-inject.js]
   run-active <commands-json-or-@file>
 
 Global options:
@@ -1266,6 +1267,18 @@ const runCli = async (): Promise<void> => {
       }
       const commands = await parseCommandsInput(raw);
       const batch = await runActiveCommands(ctx, commands);
+      formatCommand(ctx, batch);
+      return;
+    }
+    case "fill-job": {
+      // Inject and run the job autofill script from the job-apply-extension repo
+      const injectPath = rest[0] || "C:/Users/Apple/Documents/Github/job-apply-extension/inject.js";
+      const script = await readFile(injectPath, "utf-8");
+      // First inject the script, then trigger fill
+      const batch = await runActiveCommands(ctx, [
+        { type: "evaluate", expression: script },
+        { type: "evaluate", expression: "JSON.stringify(window.__jobAutoFill())" }
+      ]);
       formatCommand(ctx, batch);
       return;
     }
